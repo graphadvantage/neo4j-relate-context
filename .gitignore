@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local Aura credentials and agent memory
+/connections/
+/relate-dbs/*.rl*
