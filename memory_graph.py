@@ -3,7 +3,10 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
+import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import subprocess
@@ -44,7 +47,7 @@ SECRET_RULES = [
 LOAD = """
 MATCH (:ContextProject {name: $input.project})-[:HAS_NOTE]->(n:ContextNote)
 RETURN n.id AS id, n.source AS source, n.title AS title, n.body AS body,
-       n.created_at AS created_at, n.git_commit AS git_commit
+       n.created_at AS created_at, n.git_commit AS git_commit, n.username AS username
 ORDER BY n.created_at DESC, n.id
 LIMIT $input.limit
 """
@@ -53,7 +56,8 @@ SAVE = """
 MERGE (p:ContextProject {name: $input.project})
 MERGE (n:ContextNote {id: $input.id})
 ON CREATE SET n.source = $input.source, n.title = $input.title, n.body = $input.body,
-              n.created_at = $input.created_at, n.git_commit = $input.git_commit
+              n.created_at = $input.created_at, n.git_commit = $input.git_commit,
+              n.username = $input.username, n.identity_source = 'os'
 MERGE (p)-[:HAS_NOTE]->(n)
 RETURN n.id AS id
 LIMIT 1
@@ -61,7 +65,7 @@ LIMIT 1
 
 VERIFY = """
 MATCH (:ContextProject {name: $input.project})-[:HAS_NOTE]->(n:ContextNote {id: $input.id})
-RETURN n.id AS id, n.source AS source, n.created_at AS created_at
+RETURN n.id AS id, n.source AS source, n.created_at AS created_at, n.username AS username
 LIMIT 1
 """
 
@@ -71,7 +75,7 @@ MATCH (:ContextProject {name: $input.project})-[:HAS_SESSION]->(s:ContextSession
 OPTIONAL MATCH (f)-[:SUPPORTED_BY]->(m:ContextMessage)
 WITH s, f, max(m.timestamp) AS timestamp, collect(m.position) AS evidence
 RETURN s.session_id AS session, s.source AS source, f.kind AS kind,
-       f.subject AS subject, f.body AS body, evidence, timestamp
+       f.subject AS subject, f.body AS body, evidence, timestamp, s.username AS username
 ORDER BY timestamp DESC, f.id
 LIMIT $input.limit
 """
@@ -79,8 +83,18 @@ LIMIT $input.limit
 SESSION = """
 MATCH (:ContextProject {name: $input.project})-[:HAS_SESSION]->(s:ContextSession {session_id: $input.session})
       -[:HAS_MESSAGE]->(m:ContextMessage)
+OPTIONAL MATCH (m)-[:USES_TOOL]->(tool:ContextTool)
+OPTIONAL MATCH (m)-[:EXECUTES_QUERY]->(q:ContextQuery)
+OPTIONAL MATCH (s)-[:HAS_TURN]->(t:ContextTurn)-[:HAS_MESSAGE]->(m)
+OPTIONAL MATCH (t)-[:HAS_REASONING]->(reasoning:ContextReasoning)
 RETURN s.source AS source, m.position AS position, m.role AS role, m.body AS body,
-       m.timestamp AS timestamp, m.kind AS kind, m.tool AS tool, m.cypher AS cypher
+       m.timestamp AS timestamp, m.kind AS kind, m.tool AS tool, m.cypher AS cypher,
+       m.username AS username, tool.id AS tool_id, q.id AS query_id,
+       q.parameters AS parameters, m.rationale AS rationale, m.result_summary AS result_summary,
+       reasoning.id AS reasoning_id, reasoning.summary AS reasoning_summary,
+       reasoning.model AS model, reasoning.model_version AS model_version, reasoning.model_effort AS model_effort,
+       reasoning.input_tokens AS input_tokens, reasoning.output_tokens AS output_tokens,
+       reasoning.total_tokens AS total_tokens, reasoning.elapsed_ms AS elapsed_ms
 ORDER BY m.position DESC, m.id
 LIMIT $input.limit
 """
@@ -111,10 +125,34 @@ MERGE (a)-[:NEXT]->(b)
 RETURN count(*) AS next_links
 """
 
+# A tool is a project-scoped catalog entry; a query is an individual execution.
+# The message remains the ordered evidence for both, including the full arguments.
+TOOL_GRAPH = """
+UNWIND $input.tools AS row
+MATCH (p:ContextProject {name: row.project})-[:HAS_SESSION]->(:ContextSession)
+      -[:HAS_MESSAGE]->(m:ContextMessage {id: row.message_id})
+MERGE (tool:ContextTool {id: row.tool_id})
+ON CREATE SET tool.name = row.name, tool.source = row.source, tool.project = row.project
+MERGE (p)-[:HAS_TOOL]->(tool)
+MERGE (m)-[:USES_TOOL]->(tool)
+CALL (row, m, tool) {
+    WITH row, m, tool WHERE row.cypher IS NOT NULL
+    MERGE (q:ContextQuery {id: row.query_id})
+    ON CREATE SET q.cypher = row.cypher, q.parameters = row.parameters,
+                  q.rationale = row.rationale, q.result_summary = row.result_summary,
+                  q.timestamp = m.timestamp, q.username = m.username, q.identity_source = m.identity_source
+    MERGE (m)-[:EXECUTES_QUERY]->(q)
+    MERGE (q)-[:USES_TOOL]->(tool)
+    RETURN count(*) AS queries
+}
+RETURN count(*) AS tools
+"""
+
 EXCHANGE = """
 MERGE (p:ContextProject {name: $input.project})
 MERGE (s:ContextSession {id: $input.key})
-SET s.source = $input.source, s.session_id = $input.session
+SET s.source = $input.source, s.session_id = $input.session,
+    s.username = $input.username, s.identity_source = 'os'
 SET s.git_commit = coalesce($input.git_commit, s.git_commit)
 MERGE (p)-[:HAS_SESSION]->(s)
 MERGE (t:ContextTurn {id: $input.turn_key})
@@ -123,14 +161,38 @@ MERGE (s)-[:HAS_TURN]->(t)
 WITH p, s, t
 WHERE t.fingerprint = $input.fingerprint
 OPTIONAL MATCH (s)-[:HAS_MESSAGE]->(old:ContextMessage)
-WITH p, s, coalesce(max(old.position), 0) AS last
+WITH p, s, t, coalesce(max(old.position), 0) AS last
 UNWIND $input.messages AS row
 MERGE (m:ContextMessage {id: row.id})
 ON CREATE SET m.position = last + row.position, m.timestamp = $input.timestamp,
               m.role = row.role, m.body = row.body, m.kind = row.kind,
-              m.tool = row.tool, m.cypher = row.cypher, m.call_id = row.call_id
+              m.tool = row.tool, m.cypher = row.cypher, m.call_id = row.call_id,
+              m.rationale = row.rationale, m.result_summary = row.result_summary,
+              m.parameters = row.parameters,
+              m.username = $input.username, m.identity_source = 'os'
 MERGE (s)-[:HAS_MESSAGE]->(m)
-WITH DISTINCT p, s
+MERGE (t)-[:HAS_MESSAGE]->(m)
+WITH DISTINCT p, s, t
+MERGE (reasoning:ContextReasoning {id: $input.reasoning.id})
+ON CREATE SET reasoning.summary = $input.reasoning.summary,
+              reasoning.model = $input.reasoning.model, reasoning.model_version = $input.reasoning.model_version,
+              reasoning.model_effort = $input.reasoning.model_effort,
+              reasoning.input_tokens = $input.reasoning.input_tokens, reasoning.output_tokens = $input.reasoning.output_tokens,
+              reasoning.total_tokens = $input.reasoning.total_tokens, reasoning.elapsed_ms = $input.reasoning.elapsed_ms,
+              reasoning.model_details_source = $input.reasoning.model_details_source,
+              reasoning.usage_source = $input.reasoning.usage_source, reasoning.timing_source = $input.reasoning.timing_source,
+              reasoning.timestamp = $input.timestamp, reasoning.username = $input.username, reasoning.identity_source = 'os'
+MERGE (t)-[:HAS_REASONING]->(reasoning)
+CALL (t, reasoning) {
+    MATCH (t)-[:HAS_MESSAGE]->(evidence:ContextMessage)
+    WHERE evidence.kind IN ['tool_call', 'final_response']
+    MERGE (reasoning)-[:SUPPORTED_BY]->(evidence)
+    RETURN count(*) AS reasoning_evidence
+}
+WITH p, s
+CALL () {
+""" + TOOL_GRAPH + """
+}
 CALL (p, s) {
     UNWIND $input.entities AS row
     MATCH (s)-[:HAS_MESSAGE]->(m:ContextMessage {id: row.message_id})
@@ -179,6 +241,13 @@ def exchange(project, source, args):
         event = tool_event(0, None, name, args_text, None)
         if item.get("cypher"):
             event["cypher"] = clean(item["cypher"], 64000, "cypher")
+        for field in ("rationale", "result_summary"):
+            if field in item:
+                event[field] = clean(item[field], 4000, field)
+        if "parameters" in item:
+            if not isinstance(item["parameters"], dict):
+                raise ValueError("parameters must be a JSON object")
+            event["parameters"] = clean(json.dumps(item["parameters"], ensure_ascii=False), 64000, "parameters")
         messages.append(event)
     messages.append({"role": "assistant", "kind": "final_response", "body": response})
     for index, item in enumerate(messages, 1):
@@ -202,10 +271,67 @@ def exchange(project, source, args):
         message_id = evidence[item.get("evidence", "prompt")]
         facts.append({"id": digest([key, turn, kind, subject, body]), "kind": kind,
                       "subject": subject, "body": body, "message_id": message_id})
+    turn_key = digest([key, turn])
+    reasoning = reasoning_record(turn_key, args)
+    fingerprint_parts = [messages, mentions, facts]
+    if any(field in args for field in REASONING_FIELDS):
+        fingerprint_parts.append(reasoning)
     return {"project": project, "source": source, "session": session, "key": key,
-            "turn_key": digest([key, turn]), "fingerprint": digest([messages, mentions, facts]),
+            "username": pwd.getpwuid(os.getuid()).pw_name,
+            "turn_key": turn_key, "fingerprint": digest(fingerprint_parts), "reasoning": reasoning,
             "timestamp": datetime.now(timezone.utc).isoformat(), "messages": messages,
+            "tools": tool_records(project, source, messages),
             "entities": mentions, "memories": facts, "git_commit": None}
+
+
+REASONING_FIELDS = ("reasoning_summary", "model", "model_version", "model_effort", "input_tokens", "output_tokens", "total_tokens", "elapsed_ms")
+
+
+def reasoning_record(turn_key, args):
+    record = {"id": digest([turn_key, "reasoning"])}
+    for field, limit in (("reasoning_summary", 4000), ("model", 200), ("model_version", 200), ("model_effort", 80)):
+        record["summary" if field == "reasoning_summary" else field] = clean(args[field], limit, field) if field in args else None
+    for field in ("input_tokens", "output_tokens", "total_tokens"):
+        value = args.get(field)
+        if field in args and (type(value) is not int or not 0 <= value <= 2**63 - 1):
+            raise ValueError(f"{field} must be a nonnegative 64-bit integer")
+        record[field] = value
+    if record["input_tokens"] is not None and record["output_tokens"] is not None:
+        total = record["input_tokens"] + record["output_tokens"]
+        if total > 2**63 - 1:
+            raise ValueError("total_tokens exceeds a 64-bit integer")
+        if record["total_tokens"] is not None and record["total_tokens"] != total:
+            raise ValueError("total_tokens must equal input_tokens + output_tokens when both are supplied")
+        record["total_tokens"] = total
+    elapsed = args.get("elapsed_ms")
+    if "elapsed_ms" in args and (type(elapsed) not in (int, float) or not 0 <= elapsed <= 2**63 - 1 or not math.isfinite(elapsed)):
+        raise ValueError("elapsed_ms must be finite and nonnegative")
+    record["elapsed_ms"] = elapsed
+    record["model_details_source"] = "client_reported" if any(record[f] for f in ("model", "model_version", "model_effort")) else "unavailable"
+    record["usage_source"] = "client_reported" if any(record[f] is not None for f in ("input_tokens", "output_tokens", "total_tokens")) else "unavailable"
+    record["timing_source"] = "client_reported" if elapsed is not None else "unavailable"
+    return record
+
+
+def tool_records(project, source, messages):
+    records = []
+    for message in messages:
+        if message.get("kind") != "tool_call":
+            continue
+        arguments = json.loads(message["body"])
+        parameters = message.get("parameters")
+        if parameters is None and isinstance(arguments, dict):
+            value = arguments.get("parameters", arguments.get("params"))
+            if isinstance(value, dict):
+                parameters = clean(json.dumps(value, ensure_ascii=False), 64000, "parameters")
+        records.append({
+            "project": project, "source": source, "message_id": message["id"],
+            "tool_id": digest([project, source, message["tool"]]), "name": message["tool"],
+            "query_id": digest([message["id"], "query"]), "cypher": message.get("cypher"),
+            "parameters": parameters, "rationale": message.get("rationale"),
+            "result_summary": message.get("result_summary"),
+        })
+    return records
 
 
 def direct_query(database, statement, parameters, *, read_only=True):
@@ -240,6 +366,7 @@ def save_note(run, project, source, note, git_commit=None):
         raise ValueError("Expected a JSON object with title and body")
     payload = {
         "project": project, "source": source,
+        "username": pwd.getpwuid(os.getuid()).pw_name,
         "title": clean(note.get("title"), 160, "title"),
         "body": clean(note.get("body"), 4000, "body"), "git_commit": git_commit,
     }

@@ -1,6 +1,7 @@
 """Replicate a consistent Relate snapshot to Aura in the background."""
 
 import hashlib
+import fcntl
 import json
 from pathlib import Path
 import stat
@@ -12,7 +13,8 @@ import threading
 from memory_graph import RELATE
 
 KEYS = ("ContextProject:name", "ContextSession:id", "ContextMessage:id",
-        "ContextMemory:id", "ContextNote:id", "ContextEntity:id", "ContextTurn:id")
+        "ContextMemory:id", "ContextNote:id", "ContextEntity:id", "ContextTurn:id",
+        "ContextTool:id", "ContextQuery:id", "ContextReasoning:id")
 DEFAULT_CREDENTIALS = Path(__file__).resolve().parent / "connections/enterprise-relate-memory.txt"
 
 
@@ -43,6 +45,12 @@ class AuraSync:
             self.wake.wait(self.interval)
 
     def push(self, previous):
+        # Each stdio connection has a worker; only one may push at a time.
+        with self.database.with_suffix(".rl.sync.lock").open("a") as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            return self._push(previous)
+
+    def _push(self, previous):
         mode = self.credentials.stat().st_mode
         if not stat.S_ISREG(mode) or mode & 0o077:
             raise ValueError("Aura credentials must be a private file")
