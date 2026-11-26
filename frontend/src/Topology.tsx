@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import { reportConsoleError } from './diagnostics';
+import { topologyLayoutInput } from './topology-layout';
 import { topologyGraph, topologyView, type Box, type CaptureEvent as Event, type Snapshot } from './topology-model';
 export type { Snapshot } from './topology-model';
 const elk = new ELK();
@@ -45,11 +46,7 @@ export function Topology({ snapshot }: { snapshot: Snapshot }) {
   const structure = JSON.stringify({ nodes: diagram.boxes.map(b => b.id).sort(), edges: diagram.edges.map(e => e.id).sort() });
   useEffect(() => {
     let canceled = false;
-    const ids = JSON.parse(structure).nodes as string[];
-    const edgeIds = JSON.parse(structure).edges as string[];
-    elk.layout({ id: 'root', width: 0, height: 0, layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '32', 'elk.layered.spacing.nodeNodeBetweenLayers': '56', 'elk.padding': '[top=40,left=30,bottom=40,right=30]' },
-      children: ids.map(id => ({ id, width: 208, height: 76 })), edges: edgeIds.map(id => { const e = diagram.edges.find(e => e.id === id)!; return e; })
-    }).then(result => { if (!canceled) { setLayout({ positions: new Map((result.children || []).map(n => [n.id, { id: n.id, title: '', subtitle: '', kind: '', x: n.x, y: n.y }])), width: result.width || 1200, height: result.height || 380, structure }); setLayoutError(false); } }).catch(() => { if (!canceled) {setLayoutError(true);reportConsoleError('Topology layout','Could not lay out the graph.');} });
+    elk.layout(topologyLayoutInput(diagram.boxes, diagram.edges)).then(result => { if (!canceled) { setLayout({ positions: new Map((result.children || []).map(n => [n.id, { id: n.id, title: '', subtitle: '', kind: '', x: n.x, y: n.y }])), width: result.width || 1200, height: result.height || 380, structure }); setLayoutError(false); } }).catch(() => { if (!canceled) {setLayoutError(true);reportConsoleError('Topology layout','Could not lay out the graph.');} });
     return () => { canceled = true; };
     // Counts and response statuses don't move the topology.
     // eslint-disable-next-line react-hooks/exhaustive-deps
