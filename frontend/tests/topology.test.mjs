@@ -101,3 +101,65 @@ test('Desktop prefers supplied project context over the MCP server name',()=>{
  assert.deepEqual(graph.boxes.filter(n=>n.kind==='project').map(n=>n.title),['Risk analysis']);
  assert(graph.boxes.some(n=>n.kind==='server' && n.title==='neo4j-mcp-wam'));
 });
+
+
+function sharedRepoFixture(agents=['codex','claude-code']) {
+ const routes=agents.map(agent=>({...route,connection:agent,agent,project:'shared-repo',server:'memory',database:agent+'.rl'}));
+ return {...snapshot,routes,events:[]};
+}
+
+test('agents converge on one repository while retaining separate MCP and database paths',()=>{
+ const fixture=sharedRepoFixture(['codex','claude-code','another-agent']);
+ const view=topologyView(fixture,false,'','',now);
+ const graph=topologyGraph(view.records,fixture.enterprise,'disabled',now);
+ const repos=graph.boxes.filter(n=>n.kind==='project');
+ assert.equal(repos.length,1);assert.equal(repos[0].title,'shared-repo');
+ assert.equal(graph.edges.filter(e=>e.targets[0]===repos[0].id).length,3);
+ const outgoing=graph.edges.filter(e=>e.sources[0]===repos[0].id);
+ assert.equal(outgoing.length,3);
+ assert.equal(new Set(outgoing.map(e=>e.actor)).size,3);
+ assert.equal(graph.boxes.filter(n=>n.kind==='server').length,3);
+ assert.equal(graph.boxes.filter(n=>n.kind==='store').length,3);
+});
+
+test('shared repository activity does not activate another agent branch',()=>{
+ const fixture=sharedRepoFixture();
+ fixture.events=[{...current,id:'codex-call',connection:'codex',call_id:'call-codex',timestamp:new Date(now).toISOString()}];
+ const view=topologyView(fixture,false,'','',now);
+ const graph=topologyGraph(view.records,fixture.enterprise,'disabled',now);
+ const repo=graph.boxes.find(n=>n.kind==='project');
+ const outgoing=graph.edges.filter(e=>e.sources[0]===repo.id);
+ assert(outgoing.find(e=>e.actor.includes('codex')).active);
+ assert(!outgoing.find(e=>e.actor.includes('claude-code')).active);
+ // A second concurrent agent lights its own route through the same junction.
+ fixture.events.push({...current,id:'code-call',connection:'claude-code',call_id:'call-code',timestamp:new Date(now).toISOString()});
+ const concurrent=topologyGraph(topologyView(fixture,false,'','',now).records,fixture.enterprise,'disabled',now);
+ assert.equal(concurrent.edges.filter(e=>e.sources[0]===repo.id && e.active).length,2);
+ // Completing Codex's call leaves only Claude Code's outgoing branch active.
+ fixture.events.push({...fixture.events[0],id:'codex-response',kind:'response'});
+ const later=topologyGraph(topologyView(fixture,false,'','',now+4000).records,fixture.enterprise,'disabled',now+4000);
+ assert.equal(later.edges.filter(e=>e.sources[0]===repo.id && e.active).length,1);
+ assert(later.edges.find(e=>e.sources[0]===repo.id && e.active).actor.includes('claude-code'));
+});
+
+test('Desktop projects remain distinct from a matching repository name',()=>{
+ const fixture=sharedRepoFixture();
+ fixture.routes.push({...route,project:'shared-repo'});
+ const graph=topologyGraph(topologyView(fixture,false,'','',now).records,fixture.enterprise,'disabled',now);
+ assert.equal(graph.boxes.filter(n=>n.kind==='project' && n.title==='shared-repo').length,2);
+});
+
+
+test('a single agent still fans out to distinct repositories and shared repos filter correctly',()=>{
+ const fixture=sharedRepoFixture();
+ fixture.routes.push({...fixture.routes[0],connection:'another-repo',project:'unrelated-repo'});
+ const graph=topologyGraph(topologyView(fixture,false,'','',now).records,fixture.enterprise,'disabled',now);
+ const projects=graph.boxes.filter(n=>n.kind==='project');
+ assert.deepEqual(projects.map(n=>n.title).sort(),['shared-repo','unrelated-repo']);
+ const codex=graph.boxes.find(n=>n.kind==='agent' && n.title==='codex');
+ assert.equal(graph.edges.filter(e=>e.sources[0]===codex.id).length,2);
+ const filtered=topologyGraph(topologyView(fixture,false,'claude-code','shared-repo',now).records,fixture.enterprise,'disabled',now);
+ assert.equal(filtered.boxes.filter(n=>n.kind==='project').length,1);
+ assert.equal(filtered.boxes.filter(n=>n.kind==='agent').length,1);
+ assert.equal(filtered.boxes.find(n=>n.kind==='agent').title,'claude-code');
+});

@@ -339,3 +339,17 @@ volume. Download the full log at `/api/errors/log`; messages are redacted before
 server-side storage. Logging starts when this version is deployed and cannot
 recover previously dismissed messages. These diagnostics are separate from
 captured chat memory and are not replicated to Aura.
+
+## Shared repository topology
+
+Coding routes are grouped by their existing Git-derived project key. A repository
+appears once when multiple agents work on that key, with incoming agent edges and
+outgoing edges to each agent's own MCP server and local database. The rule applies
+to every repository and any number of agents; Desktop project-name nodes keep
+their per-agent scope. A single agent can still connect to multiple repositories
+or Desktop knowledge-graph sources.
+
+Each topology edge retains its owning agent for animation and ELK route ordering.
+Activity through a shared repository lights only the submitting agent's path;
+concurrent agents can animate their own paths through the same junction. The
+repository stays outlined while any of its connected paths is active.

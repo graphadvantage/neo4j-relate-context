@@ -50,7 +50,7 @@ export function App() {
     finally { if (current === generation.current) setRunning(false); }
   }
   return <div className="console">
-    <header><a className="brand" href="/">relate<span> / context</span></a><span className={'live ' + (live ? 'online' : '')}><i/>{live ? 'Collector connected' : 'Reconnecting to collector'}</span></header>
+    <header><a className="brand" href="/">relate.ai<span> / enterprise memory</span></a><span className={'live ' + (live ? 'online' : '')}><i/>{live ? 'Collector connected' : 'Reconnecting to collector'}</span></header>
     <nav aria-label="Console views"><button aria-selected={tab === 'topology'} onClick={() => setTab('topology')}>01 <span>Live topology</span></button><button aria-selected={tab === 'playground'} onClick={() => setTab('playground')}>02 <span>Playground</span></button><span className="nav-note">MCP → Relate → Aura</span></nav>
     {tab === 'topology' ? <Topology snapshot={snapshot} /> : <main className="playground">
       <div className="section-heading"><div><div className="eyebrow">EXPLORE THE CAPTURE</div><h1>Query your context.</h1><p>Relate playground · persistent local graphs and enterprise Aura.</p></div>

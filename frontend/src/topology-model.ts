@@ -5,7 +5,7 @@ export type Route = { connection: string; server: string; agent: string; host: s
 export type Diagnostic = {id: string; source?: string; file?: string; offset?: number; error: string; first_seen: string; active: boolean; resolved_at?: string | null};
 export type Snapshot = { events: CaptureEvent[]; error_history?: Diagnostic[]; errors: {file: string; error: string; offset: number}[]; window: number; replication: {state: string}; routes?: Route[]; enterprise?: {name: string; kind: string} | null };
 export type Box = { id: string; title: string; subtitle: string; kind: string; x?: number; y?: number };
-export type Edge = { id: string; sources: string[]; targets: string[]; active?: boolean; activityId?: string; disabled?: boolean };
+export type Edge = { id: string; sources: string[]; targets: string[]; active?: boolean; activityId?: string; disabled?: boolean; actor?: string };
 
 export function topologyView(snapshot: Snapshot, history: boolean, agent: string, project: string, now: number) {
   const matches = (e: {agent?: string; project?: string}) => (!agent || (e.agent || 'Unspecified') === agent) && (!project || (e.project || 'Unspecified') === project);
@@ -29,11 +29,11 @@ export function topologyGraph(records: CaptureEvent[], enterprise: Snapshot['ent
   }
   const recent = (at?: string, duration=3000) => !!at && now-Date.parse(at) < duration && now-Date.parse(at) >= -2000;
   function node(id: string, title: string, subtitle: string, kind: string) { boxes.set(id, { id, title, subtitle, kind }); return id; }
-  function edge(from: string, to: string, active=false, activityId?: string, disabled=false) {
+  function edge(from: string, to: string, active=false, activityId?: string, disabled=false, actor?: string) {
     const id = JSON.stringify([from, to]);
     const previous=edges.get(id);
     edges.set(id, { id, sources: [from], targets: [to], active: active || previous?.active,
-      activityId: active ? activityId : previous?.activityId, disabled });
+      activityId: active ? activityId : previous?.activityId, disabled, actor });
   }
   const aura = enterprise ? node('aura', enterprise.name, 'Aura instance · ' + (replication === 'synced' ? 'last push confirmed' : replication === 'disabled' ? 'replication disabled' : replication), 'aura') : null;
   for (const event of records) {
@@ -53,23 +53,24 @@ export function topologyGraph(records: CaptureEvent[], enterprise: Snapshot['ent
     const inFlight=!!call && (!response ? now-Date.parse(call.timestamp)<600000 : recent(response.timestamp));
     const active=current && inFlight;
     const callId=call?.call_id || call?.id;
-    edge(host, agent, active, callId);
+    edge(host, agent, active, callId, false, agent);
     const desktop = event.agent === 'claude-desktop';
     const projectName = event.project || (desktop ? event.server : undefined);
     if (projectName) {
       const subtitle = desktop ? 'Project · Project Name' : 'Project · GitHub Repo';
-      const project = node('project:' + JSON.stringify([agentId, projectName]), projectName, subtitle, 'project');
-      edge(agent, project, active, callId);
-      edge(project, server, active, callId);
+      const projectKey = desktop ? [agentId, projectName] : ['repository', projectName];
+      const project = node('project:' + JSON.stringify(projectKey), projectName, subtitle, 'project');
+      edge(agent, project, active, callId, false, agent);
+      edge(project, server, active, callId, false, agent);
     } else {
-      edge(agent, server, active, callId);
+      edge(agent, server, active, callId, false, agent);
     }
     const commit=current && callId ? event.commits?.filter(c=>c.call_id===callId).at(-1) : undefined;
-    edge(server, destination, !!commit && recent(commit.at), commit?.id);
+    edge(server, destination, !!commit && recent(commit.at), commit?.id, false, agent);
     if (aura && database) {
       const push=event.replication;
       const pushing=push?.state==='pushing' || recent(push?.last_pushed_at,4000);
-      edge(destination, aura, pushing, push?.push_id, push?.state!=='synced');
+      edge(destination, aura, pushing, push?.push_id, push?.state!=='synced', agent);
     }
   }
   return { boxes: [...boxes.values()], edges: [...edges.values()] };
