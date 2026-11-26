@@ -6,7 +6,10 @@ import json
 import math
 import os
 from pathlib import Path
-import pwd
+try:
+    import pwd
+except ImportError:
+    pwd = None
 import re
 import shutil
 import subprocess
@@ -277,7 +280,7 @@ def exchange(project, source, args):
     if any(field in args for field in REASONING_FIELDS):
         fingerprint_parts.append(reasoning)
     return {"project": project, "source": source, "session": session, "key": key,
-            "username": pwd.getpwuid(os.getuid()).pw_name,
+            "username": pwd.getpwuid(os.getuid()).pw_name if pwd else __import__('getpass').getuser(),
             "turn_key": turn_key, "fingerprint": digest(fingerprint_parts), "reasoning": reasoning,
             "timestamp": datetime.now(timezone.utc).isoformat(), "messages": messages,
             "tools": tool_records(project, source, messages),
@@ -335,15 +338,15 @@ def tool_records(project, source, messages):
 
 
 def direct_query(database, statement, parameters, *, read_only=True):
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as params:
-        json.dump(parameters, params)
-        params.flush()
+    with tempfile.TemporaryDirectory(prefix='relate-params-') as directory:
+        params = Path(directory)/'input.json'
+        params.write_text(json.dumps(parameters), encoding='utf-8')
         command = [RELATE, "query", "--database", str(database), "--mode", "envelope"]
         if read_only:
             command.append("--read-only")
-        command.extend(["--fetch-params", f"input={params.name}", statement])
+        command.extend(["--fetch-params", f"input={params}", statement])
         result = subprocess.run(command, capture_output=True, text=True, check=True,
-                                timeout=30, umask=0o077)
+                                timeout=30, **({'umask': 0o077} if os.name == 'posix' else {}))
     return json.loads(result.stdout)["rows"]
 
 def redact(value):
@@ -366,7 +369,7 @@ def save_note(run, project, source, note, git_commit=None):
         raise ValueError("Expected a JSON object with title and body")
     payload = {
         "project": project, "source": source,
-        "username": pwd.getpwuid(os.getuid()).pw_name,
+        "username": pwd.getpwuid(os.getuid()).pw_name if pwd else __import__('getpass').getuser(),
         "title": clean(note.get("title"), 160, "title"),
         "body": clean(note.get("body"), 4000, "body"), "git_commit": git_commit,
     }

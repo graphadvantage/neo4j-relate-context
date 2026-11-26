@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "relate-tap"
+version = "0.1.0"
+description = "MCP stdio capture and a live Relate context console"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+console = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "neo4j>=5.26,<7"]
+test = ["httpx>=0.27,<1"]
+
+[project.scripts]
+relate-tap = "relate_tap.tap:main"
+relate-console = "relate_tap.server:main"
+
+[tool.setuptools]
+packages = ["relate_tap"]
+py-modules = ["memory_graph", "database_lock", "aura_sync", "memory_mcp"]
+
+[tool.setuptools.package-data]
+relate_tap = ["skills/*/SKILL.md"]

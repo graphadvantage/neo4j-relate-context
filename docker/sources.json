@@ -1,0 +1,13 @@
+{
+  "sources": [
+    {
+      "id": "enterprise-relate-memory",
+      "name": "enterprise-relate-memory",
+      "kind": "aura",
+      "uri_env": "AURA_URI",
+      "username_env": "AURA_USERNAME",
+      "password_env": "AURA_PASSWORD",
+      "database_env": "AURA_DATABASE"
+    }
+  ]
+}

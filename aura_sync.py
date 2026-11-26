@@ -1,7 +1,6 @@
 """Replicate a consistent Relate snapshot to Aura in the background."""
 
 import hashlib
-import fcntl
 import json
 from pathlib import Path
 import stat
@@ -9,12 +8,18 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import datetime, timezone
+import os
+import uuid
+from relate_tap.bootstrap import atomic_json, tap_home
 
 from memory_graph import RELATE
+from database_lock import FileLock
 
 KEYS = ("ContextProject:name", "ContextSession:id", "ContextMessage:id",
         "ContextMemory:id", "ContextNote:id", "ContextEntity:id", "ContextTurn:id",
-        "ContextTool:id", "ContextQuery:id", "ContextReasoning:id")
+        "ContextTool:id", "ContextQuery:id", "ContextReasoning:id",
+        "CaptureHost:id", "CaptureConnection:id", "CaptureEvent:id", "CaptureCall:id")
 DEFAULT_CREDENTIALS = Path(__file__).resolve().parent / "connections/enterprise-relate-memory.txt"
 
 
@@ -26,6 +31,7 @@ class AuraSync:
         self.interval = interval
         self.wake = threading.Event()
         self.status = {"state": "pending"}
+        self.receipt = {}
         threading.Thread(target=self.work, daemon=True).start()
 
     def flush(self):
@@ -38,17 +44,27 @@ class AuraSync:
             self.wake.clear()
             try:
                 previous = self.push(previous)
-                self.status = {"state": "synced"}
+                self.status = {**self.receipt, "state": "synced"}
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                self.status = {"state": "retrying", "error": type(exc).__name__}
+                self.status = {**self.receipt, "state": "retrying", "error": type(exc).__name__}
+                if self.receipt:
+                    self.publish()
                 print(f"Aura sync will retry: {type(exc).__name__}", file=sys.stderr)
             self.wake.wait(self.interval)
 
     def push(self, previous):
         # Each stdio connection has a worker; only one may push at a time.
-        with self.database.with_suffix(".rl.sync.lock").open("a") as owner:
-            fcntl.flock(owner, fcntl.LOCK_EX)
+        with FileLock(self.database.with_suffix(".rl.sync.lock")):
             return self._push(previous)
+
+    def publish(self):
+        try:
+            spool = Path(os.environ.get('RELATE_TAP_SPOOL', str(tap_home()/'spool')))
+            atomic_json(spool/(self.database.stem+'.push.json'), {
+                **self.status, 'agent': self.database.stem, 'database': self.database.name})
+        except OSError:
+            # Container consoles can also obtain status directly from their worker.
+            pass
 
     def _push(self, previous):
         mode = self.credentials.stat().st_mode
@@ -71,10 +87,16 @@ class AuraSync:
                        "--nodes-update", "skip", "--rels-update", "skip", "--json"]
             for key in KEYS:
                 command.extend(["--merge-key", key])
+            self.receipt = {'push_id': str(uuid.uuid4()), 'started_at': datetime.now(timezone.utc).isoformat()}
+            self.status = {**self.receipt, 'state': 'pushing'}
+            self.publish()
             result = subprocess.run(command, check=True, capture_output=True, timeout=120)
             report = json.loads(result.stdout)
             for entity in report["entities"]:
                 skipped = entity["skipped"]
                 if skipped["unkeyed"] or skipped["dangling"]:
                     raise ValueError("Aura push skipped rows with missing keys or endpoints")
+            self.receipt['last_pushed_at'] = datetime.now(timezone.utc).isoformat()
+            self.status = {**self.receipt, 'state': 'synced'}
+            self.publish()
         return fingerprint

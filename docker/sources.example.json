@@ -1,0 +1,8 @@
+{
+  "sources": [
+    {"id": "claude-desktop", "name": "Claude Desktop", "kind": "relate", "path": "/sources/claude-desktop.rl"},
+    {"id": "claude-code", "name": "Claude Code", "kind": "relate", "path": "/sources/claude-code.rl"},
+    {"id": "codex", "name": "Codex", "kind": "relate", "path": "/sources/codex.rl"},
+    {"id": "enterprise", "name": "Enterprise context", "kind": "aura", "uri_env": "AURA_URI", "username_env": "AURA_USERNAME", "password_env": "AURA_PASSWORD", "database": "neo4j"}
+  ]
+}

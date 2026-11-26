@@ -11,8 +11,9 @@ import sys
 from aura_sync import AuraSync, DEFAULT_CREDENTIALS
 from database_lock import DatabaseLock
 from memory_graph import ENTITIES, EXCHANGE, LOAD, RECALL, SESSION, clean, direct_query, exchange, save_note
+from relate_tap.bootstrap import database_for, canonical_agent, discover_project, settings
 
-DEFAULT_DATABASE = Path(__file__).resolve().parent / "relate-dbs" / "claude-desktop.rl"
+DEFAULT_DATABASE = database_for('claude-desktop')
 
 
 def tool(name, description, required, optional=None):
@@ -69,18 +70,18 @@ with evidence pointing to the prompt or response. Use recall_context for earlier
 On an explicit wrap-up, call flush_memory after recording the final turn."""
 
 
-def call(run, sync, name, args):
+def call(run, sync, name, args, agent="claude-desktop", project=None):
     if name == "flush_memory":
         return sync.flush() if sync else {"queued": False, "state": "disabled"}
-    project = clean(args.get("project"), 160, "project")
+    project = clean(args.get("project") or project, 160, "project")
     if name == "record_turn":
-        payload = exchange(project, "claude-desktop", args)
+        payload = exchange(project, agent, args)
         rows = run(EXCHANGE, payload, read_only=False)
         if not rows or rows[0]["next_links"] == 0:
             raise ValueError("Turn was not saved; check whether the turn ID was reused with different content")
         return {"session": payload["session"], "turn": args["turn"], "events": len(payload["messages"])}
     if name == "save_context":
-        return {"notes": save_note(run, project, "claude-desktop", args)}
+        return {"notes": save_note(run, project, agent, args)}
     limit = args.get("limit", 10)
     if type(limit) is not int or not 1 <= limit <= 50:
         raise ValueError("limit must be an integer between 1 and 50")
@@ -94,22 +95,22 @@ def call(run, sync, name, args):
     raise ValueError("Unknown memory tool")
 
 
-def respond(run, sync, message):
+def respond(run, sync, message, agent="claude-desktop", project=None):
     method = message.get("method")
     if method == "initialize":
         version = message.get("params", {}).get("protocolVersion")
         return {"protocolVersion": version if version in {"2024-11-05", "2025-03-26", "2025-06-18"}
                 else "2025-06-18", "capabilities": {"tools": {}},
                 "serverInfo": {"name": "relate-memory", "version": "1.2.0"},
-                "instructions": INSTRUCTIONS}
+                "instructions": INSTRUCTIONS + (f"\nCurrent Git repository project key: {project}. Use this for coding context." if project else "")}
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": TOOLS}
+        return {"tools": [{**t, "inputSchema": {**t["inputSchema"], "required": [k for k in t["inputSchema"]["required"] if k != "project"]}} for t in TOOLS]} if project else {"tools": TOOLS}
     if method == "tools/call":
         try:
             params = message["params"]
-            result = call(run, sync, params["name"], params.get("arguments", {}))
+            result = call(run, sync, params["name"], params.get("arguments", {}), agent, project)
             return {"content": [{"type": "text", "text": json.dumps(result)}]}
         except subprocess.CalledProcessError as exc:
             return {"content": [{"type": "text", "text": f"Relate query failed (exit {exc.returncode})"}],
@@ -121,7 +122,7 @@ def respond(run, sync, message):
     return None
 
 
-def serve(run, sync):
+def serve(run, sync, agent="claude-desktop", project=None):
     for line in sys.stdin:
         try:
             message = json.loads(line)
@@ -131,7 +132,7 @@ def serve(run, sync):
             continue
         if not isinstance(message, dict) or "id" not in message:
             continue
-        result = respond(run, sync, message)
+        result = respond(run, sync, message, agent, project)
         reply = {"jsonrpc": "2.0", "id": message["id"]}
         if result is None:
             reply["error"] = {"code": -32601, "message": "Method not found"}
@@ -140,26 +141,32 @@ def serve(run, sync):
         print(json.dumps(reply), flush=True)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
+    parser.add_argument("--agent", type=canonical_agent, default="claude-desktop")
+    parser.add_argument("--project")
+    parser.add_argument("--database", type=Path)
     aura = parser.add_mutually_exclusive_group()
     aura.add_argument("--aura", type=Path, default=DEFAULT_CREDENTIALS)
     aura.add_argument("--no-aura", action="store_true")
-    args = parser.parse_args()
-    database = args.database.resolve()
-    if database.suffix != ".rl" or not database.is_file():
-        parser.error("Expected an existing Relate .rl file")
+    args = parser.parse_args(argv)
+    database = (args.database or database_for(args.agent)).resolve()
+    if database.suffix != ".rl":
+        parser.error("Expected a Relate .rl path")
+    database.parent.mkdir(parents=True, exist_ok=True)
 
     os.umask(0o077)
     graph_lock = DatabaseLock(database)
+    with graph_lock:
+        if not database.exists():
+            direct_query(database, 'RETURN 1 AS initialized', {}, read_only=False)
 
     def run(statement, parameters, *, read_only=True):
         with graph_lock:
             return direct_query(database, statement, parameters, read_only=read_only)
 
-    sync = None if args.no_aura else AuraSync(database, args.aura.resolve(), graph_lock)
-    serve(run, sync)
+    sync = None if args.no_aura else AuraSync(database, Path(settings().get("aura_credentials") or args.aura).resolve(), graph_lock)
+    serve(run, sync, args.agent, args.project or (discover_project() if args.agent != "claude-desktop" else None))
 
 
 if __name__ == "__main__":
