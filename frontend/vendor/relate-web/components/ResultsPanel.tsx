@@ -1,3 +1,4 @@
+import type { GraphStyleRule } from '@neo4j-ndl/react-graph';
 import { lazy, Suspense } from 'react';
 import { Banner, Box, Flex, Tabs, Typography } from '@neo4j-ndl/react';
 
@@ -21,6 +22,7 @@ const TabFallback = () => (
 export type ViewTab = 'graph' | 'table' | 'json';
 
 interface Props {
+  styleRules?: GraphStyleRule[];
   tab: ViewTab;
   onTabChange: (tab: ViewTab) => void;
   /** The last script run: its last statement's result, and its counters. */
@@ -30,6 +32,7 @@ interface Props {
 }
 
 export function ResultsPanel({
+  styleRules,
   tab,
   onTabChange,
   run,
@@ -59,7 +62,7 @@ export function ResultsPanel({
       </Box>
       <Box className="n-flex-1 relate-scroll" style={{ overflow: 'auto', minHeight: 0 }}>
         <Suspense fallback={<TabFallback />}>
-          {tab === 'graph' && <NeedleGraphView result={run?.last ?? null} />}
+          {tab === 'graph' && <NeedleGraphView styleRules={styleRules} result={run?.last ?? null} />}
           {tab === 'table' && run && <NeedleResultsTable result={run.last} />}
           {tab === 'json' && run && <JsonView result={run.last} />}
         </Suspense>

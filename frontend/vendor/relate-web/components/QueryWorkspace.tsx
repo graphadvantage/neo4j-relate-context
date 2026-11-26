@@ -1,3 +1,4 @@
+import type { GraphStyleRule } from '@neo4j-ndl/react-graph';
 import { Flex, TextButton, Typography } from '@neo4j-ndl/react';
 
 import type { ScriptRun } from '../lib/engine';
@@ -6,6 +7,7 @@ import { QueryPanel } from './QueryPanel';
 import { ResultsPanel, type ViewTab } from './ResultsPanel';
 
 interface Props {
+  styleRules?: GraphStyleRule[];
   query: string;
   onQueryChange: (q: string) => void;
   onRun: (text: string) => void;
@@ -22,6 +24,7 @@ interface Props {
 }
 
 export function QueryWorkspace({
+  styleRules,
   query,
   onQueryChange,
   onRun,
@@ -72,7 +75,7 @@ export function QueryWorkspace({
         running={running}
         history={history}
       />
-      <ResultsPanel
+      <ResultsPanel styleRules={styleRules}
         tab={tab}
         onTabChange={onTabChange}
         run={run}

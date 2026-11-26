@@ -1,3 +1,4 @@
+import type { GraphStyleRule } from '@neo4j-ndl/react-graph';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type NVL from '@neo4j-nvl/base';
 import { TextButton } from '@neo4j-ndl/react';
@@ -10,6 +11,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { useNvlTouch } from '../hooks/useNvlTouch';
 
 interface Props {
+  styleRules?: GraphStyleRule[];
   result: WireResult | null;
 }
 
@@ -26,7 +28,7 @@ interface Growth {
 const noGrowth = (): Growth => ({ nodes: [], rels: [], ids: new Map() });
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-export function NeedleGraphView({ result }: Props) {
+export function NeedleGraphView({ result, styleRules }: Props) {
   const isMobile = useIsMobile();
   const { nodes, rels, limitHit } = useMemo(() => {
     if (!result) return { nodes: [], rels: [], limitHit: false };
@@ -183,6 +185,7 @@ export function NeedleGraphView({ result }: Props) {
       )}
       {result && nodes.length > 0 && (
         <GraphVisualization
+          styleRules={styleRules}
           nvlRef={nvlRef}
           nodes={allNodes}
           rels={allRels}

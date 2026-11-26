@@ -1,3 +1,6 @@
+import type { GraphStyleRule } from '@neo4j-ndl/react-graph';
+import { PlaygroundSidebar } from './PlaygroundSidebar';
+import { defaultQueries } from './playground-schema';
 import { useEffect, useRef, useState } from 'react';
 import { QueryWorkspace } from '../vendor/relate-web/components/QueryWorkspace';
 import type { ScriptRun } from '../vendor/relate-web/lib/engine';
@@ -19,6 +22,7 @@ export function App() {
   const [view, setView] = useState<'graph'|'table'|'json'>('graph');
   const [history, setHistory] = useState<string[]>([]), [truncated, setTruncated] = useState(false);
   const [timings, setTimings] = useState<unknown>(null);
+  const [styleRules,setStyleRules]=useState<GraphStyleRule[]>([]);
   const generation = useRef(0);
   useEffect(() => {
     const refresh = () => fetch('/api/sources').then(async r => { if (!r.ok) throw Error('Cannot load sources'); setSources(await r.json()); }).catch(e => {setError(e.message); reportConsoleError('Source inventory', e.message);});
@@ -35,7 +39,7 @@ export function App() {
   function changeSource(id: string) {
     generation.current++;
     engine.source = id; engine.kind = sources.find(s => s.id === id)?.kind ?? 'relate';
-    setSource(id); setRun(null); setError(null); setElapsed(null); setRunning(false); setTimings(null); setTruncated(false);
+    setSource(id); setStyleRules([]); setRun(null); setError(null); setElapsed(null); setRunning(false); setTimings(null); setTruncated(false);
   }
   async function execute(text: string) {
     const current = ++generation.current;
@@ -55,11 +59,11 @@ export function App() {
     {tab === 'topology' ? <Topology snapshot={snapshot} /> : <main className="playground">
       <div className="section-heading"><div><div className="eyebrow">EXPLORE THE CAPTURE</div><h1>Query your context.</h1><p>Relate playground · persistent local graphs and enterprise Aura.</p></div>
       <label>Source<select aria-label="Database source" value={source} onChange={e => changeSource(e.target.value)}>{sources.map(s => <option key={s.id} value={s.id}>{s.name} · {s.kind}</option>)}</select></label></div>
-      <div className="query-presets">{['MATCH (n) RETURN n LIMIT 100', 'MATCH (q:ContextQuery) RETURN q.cypher, q.parameters, q.timestamp LIMIT 50', 'MATCH p=(:CaptureConnection)-[:HAS_EVENT]->(:CaptureEvent) RETURN p LIMIT 50'].map((q, i) => <button key={q} onClick={() => setQuery(q)}>{['All context','Captured Cypher','Capture graph'][i]}</button>)}<span>Read only · one statement · 1,000 records maximum</span></div>
+      <div className="query-presets">{defaultQueries.map(preset => <button key={preset.name} onClick={() => setQuery(preset.query)}>{preset.name}</button>)}<span>Read only · one statement · 1,000 records maximum</span></div>
       <details className="parameters"><summary>Query parameters</summary><textarea aria-label="Query parameters JSON" value={params} onChange={e => setParams(e.target.value)} spellCheck={false}/></details>
       {error && !run && <div className="notice error" role="alert">{error}</div>}
       {truncated && <div className="notice">Result limited to 1,000 records. Add filters or a smaller LIMIT.</div>}
-      <div className="workspace"><QueryWorkspace query={query} onQueryChange={setQuery} onRun={execute} engineReady={sources.length > 0} running={running} tab={view} onTabChange={setView} run={run} error={null} elapsed={elapsed} paramsNote={null} history={history}/></div>
+      <div className="playground-layout"><PlaygroundSidebar key={source} source={source} ready={sources.some(s=>s.id===source)} onQuery={setQuery} onStyles={setStyleRules}/><div className="workspace"><QueryWorkspace query={query} onQueryChange={setQuery} onRun={execute} engineReady={sources.length > 0} running={running} tab={view} onTabChange={setView} run={run} error={null} elapsed={elapsed} paramsNote={null} history={history} styleRules={styleRules}/></div></div>
       {timings !== null && <details className="parameters"><summary>Relate query timings (not model telemetry)</summary><pre>{JSON.stringify(timings, null, 2)}</pre></details>}
       <footer>Adapted from the <a href="https://github.com/relatedb/relate-web" target="_blank" rel="noreferrer">Relate web playground</a> · Apache 2.0</footer>
     </main>}

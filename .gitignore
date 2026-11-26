@@ -230,3 +230,7 @@ __marimo__/
 /frontend/*.tsbuildinfo
 /compose.local.yaml
 /local-sources.json
+
+# Vendored playground TypeScript sources (not Python library output)
+!/frontend/vendor/relate-web/lib/
+!/frontend/vendor/relate-web/lib/*.ts
