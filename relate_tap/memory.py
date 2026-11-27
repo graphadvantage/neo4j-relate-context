@@ -14,7 +14,7 @@ from .bootstrap import atomic_json, canonical_agent, database_for, settings, sta
 
 def execute(agent, project, operation, payload=None, limit=5):
     agent = canonical_agent(agent)
-    project = clean(project,160,'project')
+    project = clean(project,512,'project')
     if operation == 'flush':
         if not (os.environ.get('RELATE_TAP_AURA_CREDENTIALS') or settings().get('aura_credentials')):
             return {'queued': False, 'state': 'disabled'}

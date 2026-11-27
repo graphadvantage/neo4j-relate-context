@@ -218,17 +218,21 @@ cd ~/GitHub/your-repo
 claude
 ```
 
-The tap and memory server discover the project from the Git-origin repository
-name, so renamed checkouts and worktrees retain the same project attribution.
+The tap and memory server discover a canonical project key from the Git origin,
+such as `git:github.com/graphadvantage/neo4j-relate-context`. SSH and HTTPS origins
+for the same host and repository share a key; different owners or hosts remain
+separate. Renamed checkouts and worktrees retain the same project attribution.
 All Claude Code repositories write to `~/.relate-tap/databases/claude-code.rl`,
 organized under their respective `ContextProject` nodes. Git-attributed projects
 and sessions receive the secondary `Code` label. The native worker pushes this
 database to the configured enterprise Aura instance.
 
-Attribution currently uses the repository's short name, so distinct repositories
-that share a basename (for example two different `backend` repos under separate
-owners) resolve to the same `ContextProject` and shared recall scope. Keep
-repository names distinct until scoping is extended to full origin identity.
+Repositories without a usable origin use a `git-local:` hash of the Git common
+directory. This keeps worktrees together without publishing local paths. Local
+keys are specific to that checkout and machine. Explicit `--project` overrides
+remain exact user-selected scopes. Existing short-name history is retained and
+never silently included in canonical recall; see
+[binding verified legacy sessions](docs/relate-tap.md#repository-identity-and-legacy-history).
 
 Automatic conversation capture also requires memory instructions. Add the
 following to `~/.claude/CLAUDE.md` to enable it across repositories:

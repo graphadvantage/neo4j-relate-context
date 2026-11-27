@@ -19,7 +19,7 @@ def query_integrity(cypher):
 
 
 def scope(project, mcp_source_id):
-    if not isinstance(project, str) or not project.strip() or len(project) > 160:
+    if not isinstance(project, str) or not project.strip() or len(project) > 512:
         raise ValueError('A non-empty project is required')
     if not isinstance(mcp_source_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}', mcp_source_id):
         raise ValueError('mcp_source_id must be the stable MCP server name, not a transport connection UUID')

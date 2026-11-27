@@ -18,11 +18,11 @@ class ContextLabelsTest(unittest.TestCase):
             self.assertIsNone(context_kind(repo.name, 'codex', directory=repo))
             subprocess.run(['git','init',str(repo)],check=True,capture_output=True)
             subprocess.run(['git','-C',str(repo),'remote','add','origin','git@github.com:team/shared.git'],check=True)
-            self.assertEqual(context_kind('shared','codex',directory=repo),'Code')
-            self.assertEqual(context_kind('shared','claude-code',directory=repo),'Code')
+            self.assertEqual(context_kind('git:github.com/team/shared','codex',directory=repo),'Code')
+            self.assertEqual(context_kind('git:github.com/team/shared','claude-code',directory=repo),'Code')
             self.assertIsNone(context_kind('another-project','codex',directory=repo))
-            self.assertEqual(context_kind('shared','claude-desktop',directory=repo),'Chat')
-            self.assertEqual(context_kind('shared','claude-desktop','Code',directory=repo),'Code')
+            self.assertEqual(context_kind('git:github.com/team/shared','claude-desktop',directory=repo),'Chat')
+            self.assertEqual(context_kind('git:github.com/team/shared','claude-desktop','Code',directory=repo),'Code')
         with self.assertRaises(ValueError):context_kind('repo','codex','anything')
 
     def test_project_and_session_labels_preserve_graph_and_allow_mixed_projects(self):

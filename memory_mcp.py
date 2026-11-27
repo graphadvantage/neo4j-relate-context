@@ -114,7 +114,7 @@ On an explicit wrap-up, call flush_memory after recording the final turn."""
 def call(run, sync, name, args, agent="claude-desktop", project=None):
     if name == "flush_memory":
         return sync.flush() if sync else {"queued": False, "state": "disabled"}
-    project = clean(args.get("project") or project, 160, "project")
+    project = clean(args.get("project") or project, 512, "project")
     coding = args.get('context_kind') == 'Code' or (
         agent in ('codex','claude-code') and not args.get('mcp_source_id') and args.get('context_kind') != 'Chat')
     if coding and name in ('recall_context','get_session','get_evidence'):

@@ -66,7 +66,7 @@ ORDER BY m.position,m.id LIMIT $limit
 
 def coding_scope(body):
     project=body.get('project')
-    if not isinstance(project,str) or not project.strip() or len(project)>160:
+    if not isinstance(project,str) or not project.strip() or len(project)>512:
         raise ValueError('A non-empty repository project is required')
     if body.get('mcp_source_id'):
         raise ValueError('Code recall is scoped by repository; omit mcp_source_id')
