@@ -171,7 +171,7 @@ ON CREATE SET m.position = last + row.position, m.timestamp = $input.timestamp,
               m.role = row.role, m.body = row.body, m.kind = row.kind,
               m.tool = row.tool, m.cypher = row.cypher, m.call_id = row.call_id,
               m.rationale = row.rationale, m.result_summary = row.result_summary,
-              m.parameters = row.parameters,
+              m.parameters = row.parameters, m.mcp_source_id = row.mcp_source_id,
               m.username = $input.username, m.identity_source = 'os'
 MERGE (s)-[:HAS_MESSAGE]->(m)
 MERGE (t)-[:HAS_MESSAGE]->(m)
@@ -243,7 +243,16 @@ def exchange(project, source, args):
             raise ValueError("Tool arguments exceed 64000 characters")
         event = tool_event(0, None, name, args_text, None)
         if item.get("cypher"):
-            event["cypher"] = clean(item["cypher"], 64000, "cypher")
+            reported = clean(item["cypher"], 64000, "cypher")
+            if event.get('cypher') and event['cypher'].strip() != reported:
+                raise ValueError('Reported Cypher must match the complete query in tool arguments; do not summarize or abbreviate it')
+            event["cypher"] = reported
+        if event.get('cypher'):
+            from relate_tap.intent_model import query_integrity
+            if query_integrity(event['cypher']) == 'incomplete':
+                raise ValueError('Incomplete Cypher: copy the full submitted statement, including every RETURN column; never use ellipsis placeholders')
+            if query_integrity(event['cypher']) == 'not_cypher':
+                raise ValueError('Cypher must be the exact submitted statement, not a description; put descriptions in rationale instead')
         for field in ("rationale", "result_summary"):
             if field in item:
                 event[field] = clean(item[field], 4000, field)
@@ -251,6 +260,9 @@ def exchange(project, source, args):
             if not isinstance(item["parameters"], dict):
                 raise ValueError("parameters must be a JSON object")
             event["parameters"] = clean(json.dumps(item["parameters"], ensure_ascii=False), 64000, "parameters")
+        if item.get('mcp_source_id'):
+            from relate_tap.intent_model import scope
+            event['mcp_source_id'] = scope(project,item['mcp_source_id'])['mcp_source_id']
         messages.append(event)
     messages.append({"role": "assistant", "kind": "final_response", "body": response})
     for index, item in enumerate(messages, 1):
@@ -331,7 +343,7 @@ def tool_records(project, source, messages):
             "project": project, "source": source, "message_id": message["id"],
             "tool_id": digest([project, source, message["tool"]]), "name": message["tool"],
             "query_id": digest([message["id"], "query"]), "cypher": message.get("cypher"),
-            "parameters": parameters, "rationale": message.get("rationale"),
+            "parameters": parameters, "mcp_source_id": message.get("mcp_source_id"), "rationale": message.get("rationale"),
             "result_summary": message.get("result_summary"),
         })
     return records
@@ -391,6 +403,9 @@ def tool_event(position, timestamp, name, arguments, call_id):
     if isinstance(arguments, dict):
         cypher = next((arguments[key] for key in ("cypher", "statement", "query")
                        if isinstance(arguments.get(key), str)), None)
+        from relate_tap.intent_model import query_integrity
+        if query_integrity(cypher) in ('missing','not_cypher'):
+            cypher=None
     return {"position": position, "timestamp": timestamp, "role": "assistant",
             "kind": "tool_call", "tool": redact(name or "unknown"),
             "call_id": call_id, "cypher": redact(cypher) if cypher else None,

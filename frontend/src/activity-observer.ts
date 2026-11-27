@@ -19,6 +19,10 @@ export class ActivityObserver {
       if(key && !this.seen.has(key)) this.seen.set(key,baseline ? null : now);
     };
     for(const event of snapshot.events) mark('event:'+event.id);
+    for(const recall of snapshot.recalls || []) {
+      mark('recall:'+recall.id);
+      if(recall.finished_at) mark('recall:'+recall.id+':finished');
+    }
     for(const route of snapshot.routes || []) {
       for(const commit of route.commits || []) mark('commit:'+commit.id);
       mark(pushActivityKey(route));

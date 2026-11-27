@@ -21,9 +21,53 @@ In Claude's global Instructions for Claude, add this routing instruction once:
 > exclude capture.
 
 The skill guides model tool calls; it is not a guaranteed transcript hook.
-Start a new chat after installation to test selection. A successful
+Start a new chat after installation or a skill update to load the latest
+instructions. For each substantive domain-data question, recall searches with
+the current question and returns complete stored queries within its budget;
+`retrieval_required: true` means fetch `get_query` before reuse. A successful
 `record_turn` confirms local capture; `flush_memory` queues background
 replication. Verify an exact record in Aura before claiming remote delivery.
+
+## Claude Desktop memory permissions
+
+In **Settings → Plugins → relate-memory-mcp → Permissions**, configure the
+memory tools as follows. Some Claude versions list connectors under
+**Customize → Connectors** instead.
+
+![Claude Desktop memory connector tool permissions set to Always allow](assets/claude-desktop-permissions.png)
+
+| Tool | Permission | Purpose |
+| --- | --- | --- |
+| `record_turn` | **Always allow** | Automatic conversation capture. |
+| `flush_memory` | **Always allow** | Request background replication to Aura. |
+| `recall_context` | **Always allow** | Uninterrupted context recall. |
+| `get_query` | **Always allow** | Retrieve complete saved Cypher and parameters. |
+| `get_evidence` | **Always allow** | Retrieve original questions supporting an intent. |
+| `get_session` | **Always allow** | Read captured session messages. |
+
+The first two settings enable automatic capture and replication requests; the
+remaining settings enable uninterrupted recall. `save_context` can remain
+**Needs approval** for explicitly requested standalone notes. Set it to
+**Always allow** too if those requested saves should run without approval.
+
+In **Auto** mode, tools set to **Needs approval** are subject to Claude's
+automated safety check. That check can block a memory write as possible
+sensitive-information sharing before the MCP server receives it. The tool
+activity may show **“Didn't run”**, even though the server is connected and
+can read/write its database. Setting a trusted tool to **Always allow** permits
+automatic use without that check; captured exchanges are stored locally and
+replicated to the configured Aura destination.
+
+These are Claude application permissions, separate from the MCP launch entry
+in `claude_desktop_config.json`, filesystem permissions, and Aura credentials.
+No changes to those connection settings are needed for this approval issue.
+After configuring permissions, test a new turn and inspect the actual
+`record_turn` result to confirm that it saved successfully. A queued
+`flush_memory` request still does not prove delivery to Aura.
+
+See [Claude's connector permission behavior](https://support.claude.com/en/articles/13345190-get-started-with-claude-cowork).
+
+## Captured context
 
 Captured tool-call messages link through `USES_TOOL` to project-scoped
 `ContextTool` catalog nodes. Each visible query execution has its own
@@ -85,3 +129,22 @@ installs the memory skill for Claude Code or Codex if missing, and registers
 its route with the console. Claude Desktop uses its memory MCP connector.
 The topology separates current connections from capture history and shows
 the per-agent database followed by the enterprise Aura destination.
+
+## Aura embedding smoke test
+
+Set `OPENAI_API_KEY` alongside the `AURA_*` connection values in the ignored
+`.env` file, then run:
+
+```sh
+docker compose run --rm --no-deps -T --entrypoint python3 console - < tests/smoke_aura_embeddings.py
+```
+
+This manual test calls `ai.text.embedBatch()` with two synthetic questions
+using `text-embedding-3-large` and 3,072 dimensions. It creates or updates two
+`ContextEmbeddingTest` nodes with IDs `ai-text-embed-batch-3072:0` and
+`ai-text-embed-batch-3072:1`. Their `embedding` properties are native
+`VECTOR<FLOAT32>(3072)` values, assigned directly from the Cypher 25
+procedure result.
+It verifies the committed property types and dimensions and prints metadata only.
+The test makes a paid OpenAI request and is excluded from automatic unit tests.
+It does not process existing chat messages or create retrieval indexes.

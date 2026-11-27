@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 
 from database_lock import DatabaseLock
 from memory_graph import direct_query
@@ -68,6 +69,10 @@ class CaptureStore:
         self.commits = deque(maxlen=100)
         self.errors = []
         self.revision = 0
+        self.stats_lock = threading.Lock()
+        self.stats_cache = None
+        self.stats_revision = -1
+        self.stats_at = 0
         self.route_agent = route_agent
         self.route_writer = route_writer
         self.offsets = json.loads(self.state.read_text()) if self.state.exists() else {}
@@ -141,3 +146,18 @@ class CaptureStore:
         with self.lock:
             return {"revision": self.revision, "events": list(self.events),
                     "errors": list(self.errors), "window": self.events.maxlen}
+
+    def statistics(self):
+        """Durable totals, independent of route leases and the retained event window."""
+        with self.stats_lock:
+            revision=self.revision
+            if self.stats_cache is None or self.stats_revision!=revision or time.monotonic()-self.stats_at>=5:
+                with self.graph_lock:
+                    groups=direct_query(self.database,'''MATCH(c:CaptureConnection)-[:HAS_EVENT]->(e:CaptureEvent {kind:'request'})
+                        OPTIONAL MATCH(e)-[:SUBMITTED_QUERY]->(q:ContextQuery)
+                        RETURN c.agent AS agent,c.project AS project,
+                          count(DISTINCT e) AS requests,count(DISTINCT q) AS cyphers''',{})
+                self.stats_cache={'groups':groups}
+                self.stats_revision=revision
+                self.stats_at=time.monotonic()
+            return self.stats_cache

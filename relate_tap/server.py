@@ -6,6 +6,10 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import threading
+import uuid
+from collections import deque
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
@@ -19,6 +23,7 @@ from .store import CaptureStore
 from .registry import registry
 from .collector import ContainerRoutes
 from .diagnostics import Diagnostics
+from .intent_recall import IntentRecall
 from memory_graph import RELATE, direct_query
 
 
@@ -32,8 +37,15 @@ def create_app(data=None, spool=None, config=None, frontend=None):
     sources = Sources(store.database, config, store.graph_lock, os.environ.get("RELATE_CONSOLE_SOURCE_DIR"), container_routes.directory)
     sources.database_locks = container_routes.locks
     sync = None
+    recall = IntentRecall(sources)
     diagnostics = Diagnostics(data)
     stop = asyncio.Event()
+    recall_activity = deque(maxlen=100)
+    recall_activity_lock = threading.Lock()
+
+    def recall_receipts():
+        with recall_activity_lock:
+            return [dict(row) for row in recall_activity]
 
     def capture_errors(agents, snapshot=None):
         snapshot = snapshot or store.snapshot()
@@ -54,6 +66,22 @@ def create_app(data=None, spool=None, config=None, frontend=None):
             await asyncio.to_thread(diagnostics.update, errors)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=0.5)
+            except asyncio.TimeoutError:
+                pass
+
+    async def promote_intents():
+        while not stop.is_set():
+            try:
+                if recall.enabled():
+                    await asyncio.to_thread(recall.promote)
+            except Exception as exc:
+                recall.status={'state':'retrying','error':type(exc).__name__}
+                diagnostics.report('Intent promotion','Promotion failed ('+type(exc).__name__+'); retrying.')
+            # Count saved intents in the background, even when promotion fails.
+            # The topology event stream never waits for a remote Aura query.
+            await asyncio.to_thread(recall.refresh_intent_statistics)
+            try:
+                await asyncio.wait_for(stop.wait(),timeout=30)
             except asyncio.TimeoutError:
                 pass
 
@@ -82,11 +110,14 @@ def create_app(data=None, spool=None, config=None, frontend=None):
             from aura_sync import AuraSync
             sync = AuraSync(store.database, Path(credentials), store.graph_lock)
         task = asyncio.create_task(collect())
+        promotion = asyncio.create_task(promote_intents())
         try:
             yield
         finally:
             stop.set()
             await task
+            await promotion
+            recall.close()
             sources.close()
             owner.close()
 
@@ -109,6 +140,37 @@ def create_app(data=None, spool=None, config=None, frontend=None):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
+
+    @app.get('/api/memory/status')
+    def memory_status():
+        return recall.status if recall.enabled() else {'state':'disabled'}
+
+    @app.post('/api/memory/{operation}')
+    async def memory_request(operation: str, body: dict):
+        client=body.pop('_client',None)
+        activity=None
+        tools={'recall':'recall_context','query':'get_query','evidence':'get_evidence'}
+        if operation in tools and isinstance(client,dict) and all(
+            isinstance(client.get(k),str) and 0<len(client[k])<=200 for k in ('agent','host')):
+            activity={'id':str(uuid.uuid4()),'agent':client['agent'],'host':client['host'],
+                'project':body.get('project'),'tool':tools[operation],
+                'started_at':datetime.now(timezone.utc).isoformat(),'state':'running'}
+            with recall_activity_lock:
+                recall_activity.append(activity)
+        state='error'
+        try:
+            result=await asyncio.to_thread(recall.request,operation,body)
+            state=result.get('state','ready')
+            return result
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from None
+        except Exception as exc:
+            diagnostics.report('Intent recall','Recall failed ('+type(exc).__name__+').')
+            raise HTTPException(503,'Shared recall unavailable ('+type(exc).__name__+')') from None
+        finally:
+            if activity:
+                with recall_activity_lock:
+                    activity.update(state=state,finished_at=datetime.now(timezone.utc).isoformat())
 
     @app.get("/api/sources")
     def list_sources():
@@ -157,7 +219,13 @@ def create_app(data=None, spool=None, config=None, frontend=None):
         snapshot = store.snapshot()
         errors = capture_errors(inventory['agents'], snapshot)
         diagnostics.update(errors)
+        try:
+            stats=store.statistics()
+        except Exception as exc:
+            diagnostics.report('Capture totals','Stored totals unavailable ('+type(exc).__name__+').')
+            stats=None
         return {**snapshot, 'errors': errors, 'error_history': diagnostics.snapshot(), **inventory, 'enterprise': enterprise,
+                'recalls':recall_receipts(),'stats':stats,'intent_stats':recall.intent_stats,
                 "replication": dict(sync.status) if sync else {"state": state}}
 
     @app.get("/api/events")
@@ -168,7 +236,7 @@ def create_app(data=None, spool=None, config=None, frontend=None):
                 snapshot = topology()
                 # Full bounded snapshots make reconnects safe without per-browser cursors.
                 current = json.dumps([snapshot["revision"], snapshot["errors"], snapshot["replication"],
-                                      snapshot['routes'], snapshot['agents'], snapshot['enterprise'], snapshot['error_history']])
+                                      snapshot['routes'], snapshot['agents'], snapshot['enterprise'], snapshot['error_history'], snapshot['recalls'],snapshot['stats'],snapshot['intent_stats']])
                 if current != previous:
                     yield "data: " + json.dumps(snapshot) + "\n\n"
                     previous = current
