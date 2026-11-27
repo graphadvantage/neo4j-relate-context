@@ -1,6 +1,25 @@
 # neo4j-relate-context
 A federated context engine using relate.ai with replication to Neo4j Aura
 
+## Chat data flow
+
+Chat context follows a project and domain MCP source. The tap captures wrapped
+MCP requests and responses into the agent's local Relate database; `record_turn`
+adds conversation context and reported evidence. Background snapshot pushes
+replicate the local graph to enterprise Aura. For each new domain question,
+`recall_context` searches saved intents within the same project and MCP source
+using vector/full-text retrieval and returns complete saved Cypher, or a query
+ID to fetch with `get_query`.
+
+![Chat context capture from Claude Desktop through domain MCP sources to local memory and Aura, with a recall path back to the agent](assets/context-harvest-and-recall.png)
+
+The highlighted Desktop route illustrates Chat capture through `neo4j-mcp-wam`
+into `claude-desktop.rl` and onward to enterprise memory. Green marks capture
+activity; cyan marks recall returning through the memory MCP. The screenshot's
+`pushing` status indicates replication in progress, not confirmed delivery.
+
+## Claude Desktop installation
+
 Claude Desktop uses `services/relate-memory_mcp.py` over MCP stdio. Each
 connection serializes local operations on `~/.relate-tap/databases/claude-desktop.rl`;
 Aura pushes are serialized separately. Saved notes and captured exchanges
@@ -130,7 +149,7 @@ its route with the console. Claude Desktop uses its memory MCP connector.
 The topology separates current connections from capture history and shows
 the per-agent database followed by the enterprise Aura destination.
 
-## Claude Code across repositories
+## Claude Code installation across repositories
 
 Register the memory MCP once at **user scope**, using the installed executable
 path described above:
@@ -157,12 +176,20 @@ organized under their respective `ContextProject` nodes. Git-attributed projects
 and sessions receive the secondary `Code` label. The native worker pushes this
 database to the configured enterprise Aura instance.
 
-Automatic conversation capture also requires memory instructions. On this Mac,
-these are enabled in `~/.claude/CLAUDE.md`: recall at session start, call
-`record_turn` after each completed exchange, retain one session ID per chat,
-and report capture failures. The `relate-tap-memory` skill supplies the capture
-workflow. MCP registration alone does not record every chat turn or local coding
-tool call; the tap records calls passing through it, and `record_turn` supplies
+Automatic conversation capture also requires memory instructions. Add the
+following to `~/.claude/CLAUDE.md` to enable it across repositories:
+
+> When relate-memory-mcp is connected, use the relate-tap-memory skill to recall
+> repository context at session start and call record_turn after each completed
+> exchange. Keep one session ID per chat and stable turn IDs for retries. Use the
+> discovered Git-origin project default, report capture failures, and honor any
+> request to pause or exclude capture. Keep live Git authoritative and save
+> standalone project notes only when requested.
+
+The first tap connection installs `relate-tap-memory` if it is missing and
+preserves an existing installation. The skill supplies the capture workflow.
+MCP registration alone does not record every chat turn or local coding tool
+call; the tap records calls passing through it, and `record_turn` supplies
 conversation context and observed coding evidence.
 
 Restart an existing Claude Code session after changing MCP configuration or user
@@ -171,6 +198,37 @@ is missing or attributed to another repository, check for a project/local entry
 with the same server name overriding the user registration, or a fixed
 `--project` argument. Capture failures should be reported; a queued flush is
 not confirmation of delivery to Aura.
+
+The `/mcp` view should show `relate-memory-mcp` under **User MCPs**, connected
+with seven tools. User scope makes the connection available across repositories.
+
+![Claude Code MCP view showing the user-scoped relate-memory-mcp connection with seven tools](assets/claude-code-mcp-validation.png)
+
+Open `/skills` and confirm `relate-tap-memory` is listed as a user skill and
+enabled. The screenshot also shows `relate` and `relate-context`; those are
+separate skills, and the active MCP capture workflow uses `relate-tap-memory`.
+If the newly installed skill is absent, restart Claude Code and check again.
+The Claude Desktop permissions screenshot above applies to Desktop setup;
+Claude Code connection and skill validation use these two views.
+
+![Claude Code skills view showing relate-tap-memory enabled as a user skill](assets/claude-code-skills-validation.png)
+
+## Code data flow
+
+Codex and Claude Code capture repository work into separate local databases,
+`codex.rl` and `claude-code.rl`, then replicate to the same enterprise Aura
+graph. Shared recall is scoped to the repository's `Code` projects and sessions,
+with optional filtering by authoring agent. It retrieves recorded turns,
+decisions and session evidence using lexical relevance and recency, without
+requiring a domain MCP identifier, saved Cypher or embeddings.
+
+![Codex and Claude Code sharing repository context through separate local databases and enterprise Aura, with recall paths back to both agents](assets/codex-and-claude-code-cowork-recall.png)
+
+The highlighted routes show both coding agents working on
+`neo4j-relate-context`, retaining separate capture paths while sharing the
+repository through Aura. Cyan return paths illustrate recall by either agent.
+This topology shows routing and activity; recalled claims still need checking
+against the current working tree and Git history.
 
 Coding recall is shared across agents through Aura. For example:
 
