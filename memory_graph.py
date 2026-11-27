@@ -57,6 +57,8 @@ LIMIT $input.limit
 
 SAVE = """
 MERGE (p:ContextProject {name: $input.project})
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET p:Code)
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Chat' THEN [1] ELSE [] END | SET p:Chat)
 MERGE (n:ContextNote {id: $input.id})
 ON CREATE SET n.source = $input.source, n.title = $input.title, n.body = $input.body,
               n.created_at = $input.created_at, n.git_commit = $input.git_commit,
@@ -171,7 +173,7 @@ ON CREATE SET m.position = last + row.position, m.timestamp = $input.timestamp,
               m.role = row.role, m.body = row.body, m.kind = row.kind,
               m.tool = row.tool, m.cypher = row.cypher, m.call_id = row.call_id,
               m.rationale = row.rationale, m.result_summary = row.result_summary,
-              m.parameters = row.parameters,
+              m.parameters = row.parameters, m.mcp_source_id = row.mcp_source_id,
               m.username = $input.username, m.identity_source = 'os'
 MERGE (s)-[:HAS_MESSAGE]->(m)
 MERGE (t)-[:HAS_MESSAGE]->(m)
@@ -214,7 +216,9 @@ CALL (s) {
     MERGE (f)-[:SUPPORTED_BY]->(m)
     RETURN count(*) AS facts
 }
-WITH s
+WITH p, s
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET p:Code, s:Code)
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Chat' THEN [1] ELSE [] END | SET p:Chat, s:Chat)
 """ + LINK_MESSAGES
 
 ENTITY_TYPES = {"Person", "Object", "Location", "Event", "Organization"}
@@ -224,6 +228,8 @@ MEMORY_KINDS = {"fact", "decision", "open_item"}
 def exchange(project, source, args):
     if not isinstance(args, dict):
         raise ValueError("Expected a JSON exchange object")
+    from relate_tap.bootstrap import context_kind
+    work_kind = context_kind(project, source, args.get("context_kind"))
     session = clean(args.get("session"), 160, "session")
     turn = clean(args.get("turn"), 160, "turn")
     key = digest([project, source, session])
@@ -243,7 +249,16 @@ def exchange(project, source, args):
             raise ValueError("Tool arguments exceed 64000 characters")
         event = tool_event(0, None, name, args_text, None)
         if item.get("cypher"):
-            event["cypher"] = clean(item["cypher"], 64000, "cypher")
+            reported = clean(item["cypher"], 64000, "cypher")
+            if event.get('cypher') and event['cypher'].strip() != reported:
+                raise ValueError('Reported Cypher must match the complete query in tool arguments; do not summarize or abbreviate it')
+            event["cypher"] = reported
+        if event.get('cypher'):
+            from relate_tap.intent_model import query_integrity
+            if query_integrity(event['cypher']) == 'incomplete':
+                raise ValueError('Incomplete Cypher: copy the full submitted statement, including every RETURN column; never use ellipsis placeholders')
+            if query_integrity(event['cypher']) == 'not_cypher':
+                raise ValueError('Cypher must be the exact submitted statement, not a description; put descriptions in rationale instead')
         for field in ("rationale", "result_summary"):
             if field in item:
                 event[field] = clean(item[field], 4000, field)
@@ -251,6 +266,9 @@ def exchange(project, source, args):
             if not isinstance(item["parameters"], dict):
                 raise ValueError("parameters must be a JSON object")
             event["parameters"] = clean(json.dumps(item["parameters"], ensure_ascii=False), 64000, "parameters")
+        if item.get('mcp_source_id'):
+            from relate_tap.intent_model import scope
+            event['mcp_source_id'] = scope(project,item['mcp_source_id'])['mcp_source_id']
         messages.append(event)
     messages.append({"role": "assistant", "kind": "final_response", "body": response})
     for index, item in enumerate(messages, 1):
@@ -279,7 +297,7 @@ def exchange(project, source, args):
     fingerprint_parts = [messages, mentions, facts]
     if any(field in args for field in REASONING_FIELDS):
         fingerprint_parts.append(reasoning)
-    return {"project": project, "source": source, "session": session, "key": key,
+    return {"project": project, "source": source, "session": session, "key": key, "context_kind": work_kind,
             "username": pwd.getpwuid(os.getuid()).pw_name if pwd else __import__('getpass').getuser(),
             "turn_key": turn_key, "fingerprint": digest(fingerprint_parts), "reasoning": reasoning,
             "timestamp": datetime.now(timezone.utc).isoformat(), "messages": messages,
@@ -331,7 +349,7 @@ def tool_records(project, source, messages):
             "project": project, "source": source, "message_id": message["id"],
             "tool_id": digest([project, source, message["tool"]]), "name": message["tool"],
             "query_id": digest([message["id"], "query"]), "cypher": message.get("cypher"),
-            "parameters": parameters, "rationale": message.get("rationale"),
+            "parameters": parameters, "mcp_source_id": message.get("mcp_source_id"), "rationale": message.get("rationale"),
             "result_summary": message.get("result_summary"),
         })
     return records
@@ -374,7 +392,9 @@ def save_note(run, project, source, note, git_commit=None):
         "body": clean(note.get("body"), 4000, "body"), "git_commit": git_commit,
     }
     note_id = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    payload.update(id=note_id, created_at=datetime.now(timezone.utc).isoformat())
+    from relate_tap.bootstrap import context_kind
+    payload.update(id=note_id, created_at=datetime.now(timezone.utc).isoformat(),
+                   context_kind=context_kind(project, source, note.get("context_kind")))
     run(SAVE, payload, read_only=False)
     rows = run(VERIFY, {"project": project, "id": note_id})
     if not rows:
@@ -391,6 +411,9 @@ def tool_event(position, timestamp, name, arguments, call_id):
     if isinstance(arguments, dict):
         cypher = next((arguments[key] for key in ("cypher", "statement", "query")
                        if isinstance(arguments.get(key), str)), None)
+        from relate_tap.intent_model import query_integrity
+        if query_integrity(cypher) in ('missing','not_cypher'):
+            cypher=None
     return {"position": position, "timestamp": timestamp, "role": "assistant",
             "kind": "tool_call", "tool": redact(name or "unknown"),
             "call_id": call_id, "cypher": redact(cypher) if cypher else None,

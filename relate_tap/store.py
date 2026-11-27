@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 
 from database_lock import DatabaseLock
 from memory_graph import direct_query
@@ -17,7 +18,8 @@ ON CREATE SET h.name = $input.host
 MERGE (c:CaptureConnection {id: $input.connection})
 ON CREATE SET c.server = $input.server, c.agent = $input.agent,
               c.project = $input.project, c.username = $input.username
-SET c.agent = coalesce($input.agent, c.agent), c.database = coalesce($input.database, c.database)
+SET c.agent = coalesce($input.agent, c.agent), c.database = coalesce($input.database, c.database),
+    c.context_kind = coalesce($input.context_kind, c.context_kind)
 MERGE (h)-[:HAS_CONNECTION]->(c)
 MERGE (e:CaptureEvent {id: $input.id})
 ON CREATE SET e.kind = $input.kind, e.timestamp = $input.timestamp,
@@ -26,6 +28,8 @@ MERGE (c)-[:HAS_EVENT]->(e)
 CALL (c) {
     WITH c WHERE $input.project IS NOT NULL
     MERGE (project:ContextProject {name: $input.project})
+    FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET project:Code)
+    FOREACH (_ IN CASE WHEN $input.context_kind = 'Chat' THEN [1] ELSE [] END | SET project:Chat)
     MERGE (c)-[:IN_PROJECT]->(project)
     RETURN count(*) AS projects
 }
@@ -68,6 +72,10 @@ class CaptureStore:
         self.commits = deque(maxlen=100)
         self.errors = []
         self.revision = 0
+        self.stats_lock = threading.Lock()
+        self.stats_cache = None
+        self.stats_revision = -1
+        self.stats_at = 0
         self.route_agent = route_agent
         self.route_writer = route_writer
         self.offsets = json.loads(self.state.read_text()) if self.state.exists() else {}
@@ -80,8 +88,10 @@ class CaptureStore:
         required = ("id", "kind", "timestamp", "connection", "server", "host", "username")
         if not all(isinstance(event.get(k), str) for k in required):
             raise ValueError("Invalid capture event")
+        if event.get("context_kind") not in (None, "Chat", "Code"):
+            raise ValueError("context_kind must be Chat or Code")
         params = {k: event.get(k) for k in (
-            *required, "agent", "project", "call_id", "tool", "cypher", "query_sha256", "redacted", "database")}
+            *required, "agent", "project", "call_id", "tool", "cypher", "query_sha256", "redacted", "database", "context_kind")}
         params.update(host_id=hashlib.sha256(event["host"].encode()).hexdigest(),
                       tool_id=hashlib.sha256(json.dumps([event["server"], event.get("tool")]).encode()).hexdigest(),
                       parameters=json.dumps(event.get("parameters")), payload=json.dumps(event))
@@ -121,7 +131,8 @@ class CaptureStore:
                             if self.route_writer == 'native' and route.get('database_path') and route['database_path'] != str(self.database):
                                 break
                             event = {**event, 'agent': self.route_agent, 'database': self.database.name,
-                                     'client_info': route.get('client_info'), 'attribution': route.get('identity_source')}
+                                     'client_info': route.get('client_info'), 'attribution': route.get('identity_source'),
+                                     'context_kind': event.get('context_kind') or route.get('context_kind')}
                         self.persist(event)
                         next_offsets = {**self.offsets, path.name: source.tell()}
                         temporary = self.state.with_suffix(".tmp")
@@ -141,3 +152,18 @@ class CaptureStore:
         with self.lock:
             return {"revision": self.revision, "events": list(self.events),
                     "errors": list(self.errors), "window": self.events.maxlen}
+
+    def statistics(self):
+        """Durable totals, independent of route leases and the retained event window."""
+        with self.stats_lock:
+            revision=self.revision
+            if self.stats_cache is None or self.stats_revision!=revision or time.monotonic()-self.stats_at>=5:
+                with self.graph_lock:
+                    groups=direct_query(self.database,'''MATCH(c:CaptureConnection)-[:HAS_EVENT]->(e:CaptureEvent {kind:'request'})
+                        OPTIONAL MATCH(e)-[:SUBMITTED_QUERY]->(q:ContextQuery)
+                        RETURN c.agent AS agent,c.project AS project,
+                          count(DISTINCT e) AS requests,count(DISTINCT q) AS cyphers''',{})
+                self.stats_cache={'groups':groups}
+                self.stats_revision=revision
+                self.stats_at=time.monotonic()
+            return self.stats_cache

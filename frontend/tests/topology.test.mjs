@@ -163,3 +163,64 @@ test('a single agent still fans out to distinct repositories and shared repos fi
  assert.equal(filtered.boxes.filter(n=>n.kind==='agent').length,1);
  assert.equal(filtered.boxes.find(n=>n.kind==='agent').title,'claude-code');
 });
+
+test('one reverse recall route per agent aggregates projects without changing capture paths',()=>{
+ const fixture=sharedRepoFixture();
+ fixture.routes.push({...fixture.routes[0],connection:'second-project',project:'second-repo'});
+ const graph=topologyGraph(topologyView(fixture,false,'','',now).records,fixture.enterprise,'disabled',now);
+ const recall=graph.edges.filter(e=>e.kind==='recall');
+ assert.equal(recall.length,2);
+ assert(recall.every(e=>e.sources[0]==='aura' && e.targets[0].startsWith('agent:') && !e.active));
+});
+
+test('recall tool calls activate only their agent return path and expire after response',()=>{
+ for(const tool of ['recall_context','get_query','get_evidence']) {
+  const fixture=sharedRepoFixture();
+  const request={...current,id:tool,connection:'codex',server:'memory',kind:'request',tool,arguments:{query:'supplier'},call_id:tool,timestamp:new Date(now).toISOString()};
+  fixture.events=[request];
+  const make=time=>topologyGraph(topologyView(fixture,false,'','',time).records,fixture.enterprise,'disabled',time);
+  const active=make(now).edges.filter(e=>e.kind==='recall' && e.active);
+  assert.equal(active.length,1);assert(active[0].actor.includes('codex'));
+  fixture.events.push({...request,id:tool+'-response',kind:'response'});
+  assert(!make(now+6001).edges.some(e=>e.kind==='recall' && e.active));
+ }
+});
+
+test('local note recall and ordinary domain tools do not animate enterprise recall',()=>{
+ for(const tool of ['recall_context','get_session','read-cypher']) {
+  const fixture=sharedRepoFixture();
+  fixture.events=[{...current,connection:'codex',tool,call_id:'local',timestamp:new Date(now).toISOString()}];
+  const graph=topologyGraph(topologyView(fixture,false,'','',now).records,fixture.enterprise,'disabled',now);
+  assert(!graph.edges.some(e=>e.kind==='recall' && e.active));
+ }
+});
+
+test('saved counters survive reconnects and are not limited to the visible event window',async()=>{
+ const {savedCaptureCounts}=await import('../src/topology-model.ts');
+ const previous={...old,id:'query-1',call_id:'call-1',cypher:'RETURN 1',agent:'claude-desktop'};
+ const fixture={...snapshot,events:[previous],stats:{groups:[
+  {agent:'claude-desktop',project:'wam',requests:30,cyphers:20},
+  {agent:'codex',project:'repo',requests:5,cyphers:2},
+ ]}};
+ assert.equal(topologyView(fixture,false,'','',now).events.length,0);
+ assert.deepEqual(savedCaptureCounts(fixture,'',''),{requests:35,cyphers:22});
+ assert.deepEqual(savedCaptureCounts({...fixture,events:[]},'claude-desktop','wam'),{requests:30,cyphers:20});
+ assert.deepEqual(savedCaptureCounts(fixture,'codex','wam'),{requests:0,cyphers:0});
+ assert.deepEqual(savedCaptureCounts({...fixture,stats:undefined},'',''),{requests:1,cyphers:1});
+});
+
+test('intent totals count distinct saved intents with originating agent and project filters',async()=>{
+ const {savedUserIntentCount}=await import('../src/topology-model.ts');
+ const fixture={...snapshot,intent_stats:{state:'ready',groups:[
+  {project:'shared',agents:['codex','claude-code'],intents:2},
+  {project:'wam',agents:['claude-desktop'],intents:5},
+  {project:null,agents:[],intents:1}
+ ]}};
+ assert.equal(savedUserIntentCount(fixture,'',''),8);
+ assert.equal(savedUserIntentCount(fixture,'codex','shared'),2);
+ assert.equal(savedUserIntentCount(fixture,'claude-code','shared'),2);
+ assert.equal(savedUserIntentCount(fixture,'claude-desktop','wam'),5);
+ assert.equal(savedUserIntentCount(fixture,'codex','wam'),0);
+ assert.equal(savedUserIntentCount(fixture,'Unspecified','Unspecified'),1);
+ assert.equal(savedUserIntentCount({...fixture,intent_stats:{state:'unavailable',groups:[]}},'',''),null);
+});

@@ -69,3 +69,61 @@ test('balanced fan-out centers the agent and its database on the source rows',as
  }
  for(let i=1;i<sourceRows.length;i++) assert(sourceRows[i]-sourceRows[i-1]>=116-0.01);
 });
+
+test('recall lanes preserve ELK positions and connect Aura center-right to agent top-center',async()=>{
+ const {recallLanePath,recallLaneHeight}=await import('../src/topology-layout.ts');
+ const records=['codex','claude-code','claude-desktop'].map(agent=>({
+  id:agent,kind:'route',timestamp:new Date().toISOString(),connection:agent,host:'laptop',username:'user',
+  agent,server:'memory',project:'repo',database:agent+'.rl'
+ }));
+ const graph=topologyGraph(records,{name:'enterprise',kind:'aura'},'synced');
+ const withRecall=topologyLayoutInput(graph.boxes,graph.edges);
+ const without=topologyLayoutInput(graph.boxes,graph.edges.filter(e=>e.kind!=='recall'));
+ assert.deepEqual(withRecall,without);
+ const result=await new ELK().layout(withRecall);
+ const positions=new Map(result.children.map(n=>[n.id,n]));
+ for(const e of graph.edges.filter(e=>e.kind==='recall')) {
+  const from=positions.get(e.sources[0]),to=positions.get(e.targets[0]);
+  const laneY=recallLaneHeight(e.actor,graph.boxes,graph.edges,positions);
+  const path=recallLanePath(from,to,laneY);
+  assert.equal(laneY,to.y-20);
+  if(to.y>48) assert(laneY>to.y-40);
+  assert.equal(path.x,from.x+208);
+  assert.equal(path.y,from.y+38);
+  assert(path.path.includes(`Q${from.x+240} ${path.y} ${from.x+240} `));
+  assert(!/NaN|undefined/.test(path.path+path.relative));
+  assert(path.path.startsWith('M'+path.x+' '+path.y));
+  assert(path.path.includes(`Q${to.x+104} ${laneY} ${to.x+104} ${laneY+10}`));
+  assert(path.path.endsWith('V'+to.y));
+  assert(path.relative.startsWith('M0 0'));
+ }
+});
+
+test('recall padding expands only band gaps and preserves ordinary source-row spacing',async()=>{
+ const {padRecallRows,recallLaneHeight}=await import('../src/topology-layout.ts');
+ const records=['codex','claude-code','claude-desktop'].flatMap(agent=>
+  (agent==='claude-desktop' ? ['risk','fraud','robot'] : ['memory']).map(server=>({
+   id:agent+server,kind:'route',timestamp:new Date().toISOString(),connection:agent+server,host:'laptop',username:'user',
+   agent,server,project:agent==='claude-desktop' ? undefined : agent+'-repo',database:agent+'.rl'
+  })));
+ const graph=topologyGraph(records,{name:'enterprise',kind:'aura'},'synced');
+ const result=await new ELK().layout(topologyLayoutInput(graph.boxes,graph.edges));
+ const before=new Map(result.children.map(n=>[n.id,n]));
+ const padded=padRecallRows(graph.boxes,graph.edges,before);
+ assert.equal(padded.extraHeight,72);
+ const rows=graph.boxes.filter(b=>b.kind==='server' && b.id.includes('claude-desktop')).sort((a,b)=>before.get(a.id).y-before.get(b.id).y);
+ for(let i=1;i<rows.length;i++) {
+  assert.equal(padded.positions.get(rows[i].id).y-padded.positions.get(rows[i-1].id).y,
+   before.get(rows[i].id).y-before.get(rows[i-1].id).y);
+ }
+ const getAgent=name=>graph.boxes.find(b=>b.kind==='agent' && b.title===name).id;
+ const code=getAgent('claude-code'),codex=getAgent('codex');
+ assert.equal((recallLaneHeight(code,graph.boxes,graph.edges,padded.positions)-padded.positions.get(codex).y)-
+  (recallLaneHeight(code,graph.boxes,graph.edges,before)-before.get(codex).y),24);
+ for(const [id,position] of before) {
+  assert.equal(padded.positions.get(id).x,position.x);
+  for(const [otherId,other] of before) {
+   if(position.y===other.y) assert.equal(padded.positions.get(id).y,padded.positions.get(otherId).y);
+  }
+ }
+});

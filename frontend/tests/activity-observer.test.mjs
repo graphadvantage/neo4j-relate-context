@@ -61,3 +61,16 @@ test('a real empty snapshot initializes observation before the first call',()=>{
  observer.observe(empty,now-1000);
  assert(graph(data,observer).edges.some(e=>e.active && e.targets[0].startsWith('server:')));
 });
+
+test('unwrapped memory MCP receipts activate correct agent, survive polling, then expire',()=>{
+ const observer=new ActivityObserver();
+ observer.observe(empty,now-1000);
+ const receipt={id:'recall-1',host:'laptop',agent:'codex',project:'repo',tool:'get_query',started_at:at(now-20000),finished_at:at(now-19000),state:'ready'};
+ const snapshot={...data,events:[],recalls:[receipt]};
+ const make=time=>topologyGraph(topologyView(snapshot,false,'','',time).records,snapshot.enterprise,'synced',time,observer.observe(snapshot,time),snapshot.recalls);
+ assert(make(now).edges.some(e=>e.kind==='recall' && e.active));
+ assert(make(now+5000).edges.some(e=>e.kind==='recall' && e.active));
+ assert(!make(now+6001).edges.some(e=>e.kind==='recall' && e.active));
+ const baseline=new ActivityObserver();const times=baseline.observe(snapshot,now);
+ assert(!topologyGraph(topologyView(snapshot,false,'','',now).records,snapshot.enterprise,'synced',now,times,snapshot.recalls).edges.some(e=>e.kind==='recall' && e.active));
+});

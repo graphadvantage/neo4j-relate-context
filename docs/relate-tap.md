@@ -353,3 +353,184 @@ Each topology edge retains its owning agent for animation and ELK route ordering
 Activity through a shared repository lights only the submitting agent's path;
 concurrent agents can animate their own paths through the same junction. The
 repository stays outlined while any of its connected paths is active.
+
+## Shared intent recall (Cypher 25)
+
+The existing console hosts the retrieval backend; no additional MCP connection is
+needed. Set `AURA_URI`, `AURA_USERNAME`, `AURA_PASSWORD`, `AURA_DATABASE`, and
+`OPENAI_API_KEY` in `.env`, then recreate the console to load them. Native Aura
+pushes use their configured private four-line credentials file independently;
+keep that file aligned with `.env` when changing the Aura destination.
+
+On startup, a background worker creates `ContextIntent` indexes and promotes
+eligible Desktop user questions with Cypher explicitly recorded in the same
+`ContextTurn`. Qualified tool names (e.g. `robot-twin__read_cypher`) or explicit
+`tool_calls[].mcp_source_id` supply stable connection names across restarts.
+Unqualified ambiguous tools, missing Cypher, and very short acknowledgements are
+skipped. No timestamps are used to infer causality. This is an initial Desktop
+intent/query slice. Shared coding recall separately reads recorded Code turns and decisions; automatic coding handoff/decision extraction is not implemented.
+
+Intents deduplicate by project, MCP name and normalized question; original user
+messages link via `EXPRESSES`, and recorded query executions via `RESOLVED_BY`.
+Associations are labeled `same_recorded_turn` and `client_reported_unverified`;
+transport delivery does not establish answer correctness. Questions are embedded
+with `text-embedding-3-small`, using native `VECTOR` values of 1,536 dimensions.
+Long embedding inputs are bounded to 6,000 UTF-8 bytes; original questions remain
+available as evidence. The legacy 3,072-dimension smoke test is separate.
+
+Shared MCP tools:
+
+- `recall_context(project, query, mcp_source_id, mode?, limit?, max_chars?)`
+- `get_query(project, mcp_source_id, query_id, max_chars?)`
+- `get_evidence(project, mcp_source_id, intent_id, limit?, max_chars?)`
+
+`project` can be omitted when the coding server has discovered its Git project.
+Shared Chat intent retrieval requires a domain MCP source; Chat query-free `recall_context`
+keeps its legacy local-only behavior. Recall mode defaults to `hybrid`: exact
+scoped cosine (ENN) plus scoped lexical search, combined with reciprocal rank
+fusion. `ann` uses filtered vector-index search; `enn` uses exact cosine alone.
+Full-text search embeds a generated scope key in the Lucene query before its
+limit. Source/project guards are repeated for direct query and evidence lookup.
+Distinct data sources must have distinct MCP names; names are the initial logical
+identity, not globally authenticated tenant identities. This local console is
+not an enterprise authorization boundary.
+
+Responses include origin, validation, scope, receipt ID, and truncation state.
+`max_chars` is a character budget (2,000–64,000), not a measured token count;
+shared limits are 1–20. Recall includes complete Cypher and parameters in each query reference when
+they fit the budget. Otherwise the query ID remains with
+`retrieval_required: true`, requiring `get_query`; no executable preview is
+substituted. An oversized standalone `get_query` response is withheld with
+`required_chars`, never returned as a truncated executable statement. Pending
+local evidence uses scoped lexical matching over the latest 100 query-associated
+Desktop records per local database; it is explicitly separate from Aura results.
+Aura failures report `degraded`, never silently widen scope. Default native
+backend URL is `http://127.0.0.1:8080`; configure `RELATE_MEMORY_CONSOLE_URL` or
+`console_url` in `~/.relate-tap/config.json` when needed. An optional
+`RELATE_CONSOLE_TOKEN`/`console_token` uses the console's existing Basic auth.
+
+`GET /api/memory/status` reports promotion status. MCP clients must restart their
+existing memory-server connection after updating the package to discover the new
+tools. This deployment verifies MCP stdio and the backend; it does not prove each
+client will automatically invoke recall on every turn.
+
+Manual scoped acceptance test (paid embeddings; isolated fixtures are removed):
+
+```sh
+docker compose run --rm --no-deps -T -v "$PWD:/work:ro" -w /work \
+  --entrypoint python3 console - < tests/smoke_intent_recall.py
+```
+
+Reported Cypher must contain the complete submitted statement and match query
+text supplied in tool arguments. `record_turn` rejects prose descriptions and obvious ellipsis
+placeholders outside literals/comments instead of saving them as queries.
+Natural-language search arguments do not create `ContextQuery` records.
+Retry the exchange with the full observed statement. Existing incomplete query
+records remain intact for evidence, but `get_query` marks them `incomplete` and
+`reusable: false`; recall query references omit them. These are prefix/placeholder
+checks, not a Cypher parser or proof that a query executes successfully. Exact
+transport-to-turn correlation remains a separate integration step.
+
+## Recall animation
+
+The topology shows one bright-cyan enterprise-to-agent return lane per agent,
+aggregating its projects. It uses the same line width and four particles as
+capture activity; hover the lane for its memory MCP tool, project, and state.
+Each lane is routed above its own agent’s node blocks, using ELK positions, so
+return traffic occupies the gaps between agent routes without reordering layers.
+Shared repository junctions do not pull another agent’s recall lane upward.
+
+Shared `recall_context` (with a query), `get_query`, and `get_evidence` calls
+activate recall activity. Local-only legacy recall and `get_session` do not.
+Wrapped connections use tap events; the native memory forwarder also supplies
+agent/host metadata to the console so unwrapped Desktop memory connections are
+visible. These bounded, in-memory receipts contain no question, query or result
+payload. Tool activity is not proof that recall succeeded; the tooltip reports
+the returned state. Completed activity stays visible for six seconds after
+observation and is not replayed on page reload. Reconnect existing memory MCP
+processes after updating to enable forwarding metadata.
+
+Saved tool-request and Cypher-submission metrics use the collector's persisted
+capture graph across current and previous connections, independently of the
+1,000-event display window. Agent/project filters apply to these totals.
+Cypher submissions count distinct transport query records, not model-reported
+copies or distinct query strings; submitting the same statement twice counts
+as two submissions. A short cache refresh also reflects external graph resets.
+
+The **User intents saved** metric counts distinct `ContextIntent` nodes in
+enterprise Aura memory, grouped by project and originating agents. Multiple
+queries or supporting messages do not multiply an intent. Counts refresh in
+the background with intent promotion; pending, disabled, or unavailable totals
+display a dash instead of zero. **Cypher queries saved** counts the persisted
+transport submissions described above.
+
+The memory skill and MCP instructions require shared recall for each new
+substantive domain-data question, not just once per session. Applicable full
+queries should be reused; omitted query text must be fetched before reuse.
+A model can still choose to generate a query, so its reason and provenance
+should be reported honestly; this does not enforce or prove query reuse.
+
+
+### Chat and Code classification
+
+Projects and sessions retain their existing base labels and receive secondary
+`Chat` or `Code` labels. Repository work uses `:ContextProject:Code` and
+`:ContextSession:Code`; chatbot/MCP projects use `:ContextProject:Chat` and
+`:ContextSession:Chat`. A project can accumulate both labels across distinct
+sessions. Labels do not change existing IDs, uniqueness keys, or project names.
+
+The tap and memory writer discover `Code` when the project matches the Git-origin
+repository name of their working directory. Desktop defaults to `Chat` even if
+its process starts in a checkout. The tap accepts `--context-kind Chat|Code` and
+`record_turn` accepts `context_kind` for explicit attribution, including work in
+an external directory. Unknown attribution is left unclassified. Merely using
+MCP or a coding agent does not establish repository provenance.
+
+Labels are written locally and follow the existing snapshot push to Aura.
+Existing records can be labeled with `relate_tap.project_labels.backfill`, using
+an explicitly verified project inventory. This additive operation preserves
+records and skips unclassified sessions in mixed projects. It does not rename
+or split legacy projects that already share the same name.
+
+These labels establish the recall classification boundary. Shared coding recall
+reads Code projects/sessions by repository across agents; it uses lexical relevance
+and recency. Automatic handoff generation and semantic coding embeddings remain
+separate work.
+
+
+### Claude Code across repositories
+
+Register the memory MCP once at user scope:
+
+```sh
+claude mcp add --scope user relate-memory-mcp -- /usr/local/bin/relate-tap --name relate-memory-mcp -- /usr/local/bin/relate-tap memory-server --agent claude-code
+```
+
+Start Claude Code from each repository. Both tap and memory server discover its
+Git-origin repository name from the working directory. No per-repository MCP
+entry or fixed `--project` is needed. All Claude Code projects use the same
+`claude-code.rl`, with separate `ContextProject` attribution. A more specific
+project/local entry with the same server name can override the user entry;
+check `/mcp` when diagnosing a route. Restart an existing Claude Code session to
+load the changed configuration.
+
+Automatic exchange capture also requires the corresponding user/project memory
+instructions; configuring MCP alone records only calls actually made through it.
+
+
+### Shared coding recall
+
+`recall_context(context_kind="Code", query="design decisions")` searches existing
+Aura coding turns and returns author/session/turn IDs, prompt/response excerpts,
+reasoning summaries when recorded, recent sessions and structured memories.
+Code agents default to this mode even without a query. The Git project is the
+scope; no domain MCP identifier is required. `source_agent` optionally narrows
+authorship, while the default includes all agents. Code reads require Aura
+credentials but do not require an OpenAI key or make embedding requests.
+
+`get_session(context_kind="Code", session=<session id>)` reads a shared session;
+`before_position` pages backward. `get_evidence(context_kind="Code", turn_id=...)`
+expands an individual turn. Both enforce repository and Code-session scope.
+Responses use lexical relevance/recency, carry unverified evidence provenance,
+and explicitly distinguish failed retrieval, no topic match, existing sessions
+and pending local records. No historical decision or commit is invented.
