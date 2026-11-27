@@ -1,0 +1,14 @@
+.git
+.venv
+**/__pycache__
+frontend/node_modules
+frontend/dist
+connections
+relate-dbs
+.tap-spool
+*.rl
+*.rl.*
+.env
+compose.local.yaml
+local-sources.json
+tests

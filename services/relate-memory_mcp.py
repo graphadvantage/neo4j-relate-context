@@ -14,8 +14,9 @@ sys.path.insert(0, str(REPO_ROOT))
 from aura_sync import AuraSync, DEFAULT_CREDENTIALS
 from database_lock import DatabaseLock
 from memory_graph import ENTITIES, EXCHANGE, LOAD, RECALL, SESSION, clean, direct_query, exchange, save_note
+from relate_tap.bootstrap import database_for
 
-DEFAULT_DATABASE = REPO_ROOT / "relate-dbs" / "claude-desktop.rl"
+DEFAULT_DATABASE = database_for('claude-desktop')
 
 
 def tool(name, description, required, optional=None):
@@ -151,11 +152,15 @@ def main():
     aura.add_argument("--no-aura", action="store_true")
     args = parser.parse_args()
     database = args.database.resolve()
-    if database.suffix != ".rl" or not database.is_file():
-        parser.error("Expected an existing Relate .rl file")
+    if database.suffix != ".rl":
+        parser.error("Expected a Relate .rl path")
+    database.parent.mkdir(parents=True, exist_ok=True)
 
     os.umask(0o077)
     graph_lock = DatabaseLock(database)
+    with graph_lock:
+        if not database.exists():
+            direct_query(database, 'RETURN 1 AS initialized', {}, read_only=False)
 
     def run(statement, parameters, *, read_only=True):
         with graph_lock:

@@ -1,0 +1,33 @@
+services:
+  console:
+    container_name: relate-console
+    image: relate-tap:local
+    build: .
+    init: true
+    entrypoint: ["relate-console"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RELATE_CONSOLE_FRONTEND: /app/frontend/dist
+      RELATE_CONSOLE_SOURCES: /config/sources.json
+      RELATE_CONSOLE_SOURCE_DIR: /sources
+    ports:
+      - "127.0.0.1:${RELATE_CONSOLE_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ${RELATE_TAP_SPOOL:-${HOME:-${USERPROFILE}}/.relate-tap/spool}
+        target: /spool
+        read_only: true
+      - capture-data:/data
+      - ${RELATE_TAP_DATABASE_DIR:-${HOME:-${USERPROFILE}}/.relate-tap/databases}:/sources:ro
+      - ./docker/sources.json:/config/sources.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      start_period: 15s
+      retries: 3
+volumes:
+  capture-data:

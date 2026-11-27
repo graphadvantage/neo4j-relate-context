@@ -222,3 +222,15 @@ __marimo__/
 # Local Aura credentials and agent memory
 /connections/
 /relate-dbs/*.rl*
+
+# Tap runtime and frontend builds
+/.tap-spool/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/*.tsbuildinfo
+/compose.local.yaml
+/local-sources.json
+
+# Vendored playground TypeScript sources (not Python library output)
+!/frontend/vendor/relate-web/lib/
+!/frontend/vendor/relate-web/lib/*.ts

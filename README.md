@@ -2,7 +2,7 @@
 A federated context engine using relate.ai with replication to Neo4j Aura
 
 Claude Desktop uses `services/relate-memory_mcp.py` over MCP stdio. Each
-connection serializes local operations on `relate-dbs/claude-desktop.rl`;
+connection serializes local operations on `~/.relate-tap/databases/claude-desktop.rl`;
 Aura pushes are serialized separately. Saved notes and captured exchanges
 record the OS account name as `username` with `identity_source: os`.
 
@@ -48,3 +48,40 @@ and does not invent historical reasoning summaries. All three new labels are
 included in Aura replication.
 
 Run the graph integration tests with `python3 -B -m unittest discover -s tests -v`.
+# Relate tap console
+
+The `codex/relate-tap-console` branch adds a Docker-hosted live topology and
+Relate playground, plus a transparent MCP command wrapper:
+
+```sh
+relate-tap --name neo4j-fraud -- node server.js
+```
+
+See [setup, source selection, Aura replication and capture semantics](docs/relate-tap.md).
+
+On this Mac, `/usr/local/bin/relate-tap` is a symlink to the user-owned
+`~/.local/share/uv/tools/relate-tap/bin/relate-tap` installation, alongside
+`/usr/local/bin/neo4j-mcp`. This is a `uv` installation, not a Homebrew package.
+Create the link once with administrator access:
+
+```sh
+sudo ln -s "$HOME/.local/share/uv/tools/relate-tap/bin/relate-tap" /usr/local/bin/relate-tap
+```
+
+Subsequent builds update the user-owned installation behind that link; they
+do not require administrator access or changes to the MCP executable path.
+From this repository, reinstall the current build with:
+
+```sh
+UV_TOOL_BIN_DIR="$HOME/.local/bin" uv tool install --reinstall .
+```
+
+The `/usr/local/bin/relate-tap` link continues to point to the updated tool.
+Use that path in MCP configurations, or `relate-tap` when `/usr/local/bin`
+is on the client's `PATH`.
+
+The first MCP connection discovers its agent, opens or creates `<agent>.rl`,
+installs the memory skill for Claude Code or Codex if missing, and registers
+its route with the console. Claude Desktop uses its memory MCP connector.
+The topology separates current connections from capture history and shows
+the per-agent database followed by the enterprise Aura destination.
