@@ -195,6 +195,26 @@ test('local note recall and ordinary domain tools do not animate enterprise reca
  }
 });
 
+test('canonical Git scopes keep identical repository titles separate by host and owner',()=>{
+ const records=['git:github.com/one/backend','git:github.com/two/backend','git:gitlab.com/one/backend']
+  .map((project,i)=>({...current,id:'canonical-'+i,connection:'canonical-'+i,agent:'codex',project}));
+ const projects=topologyGraph(records,snapshot.enterprise,'disabled',now).boxes.filter(n=>n.kind==='project');
+ assert.equal(projects.length,3);
+ assert(projects.every(p=>p.title==='backend'));
+ assert.equal(new Set(projects.map(p=>p.id)).size,3);
+ assert.deepEqual(projects.map(p=>p.subtitle),['Git · github.com/one','Git · github.com/two','Git · gitlab.com/one']);
+});
+
+test('Code startup recall and session expansion animate enterprise return paths',async()=>{
+ const {isAuraRecall}=await import('../src/topology-model.ts');
+ for(const tool of ['recall_context','get_session','get_evidence']) {
+  const request={...current,tool,context_kind:'Code'};
+  assert.equal(isAuraRecall(request),true);
+  assert.equal(isAuraRecall({...request,arguments:{context_kind:'Chat'}}),tool==='get_evidence');
+  assert.equal(isAuraRecall({...request,context_kind:undefined,arguments:{context_kind:'Code'}}),true);
+ }
+});
+
 test('saved counters survive reconnects and are not limited to the visible event window',async()=>{
  const {savedCaptureCounts}=await import('../src/topology-model.ts');
  const previous={...old,id:'query-1',call_id:'call-1',cypher:'RETURN 1',agent:'claude-desktop'};

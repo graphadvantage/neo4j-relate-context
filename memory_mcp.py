@@ -11,7 +11,7 @@ import sys
 from aura_sync import AuraSync, DEFAULT_CREDENTIALS
 from database_lock import DatabaseLock
 from memory_graph import ENTITIES, EXCHANGE, LOAD, RECALL, SESSION, clean, direct_query, exchange, save_note
-from relate_tap.bootstrap import database_for, canonical_agent, discover_project, settings
+from relate_tap.bootstrap import database_for, canonical_agent, discover_project, settings, context_kind
 
 DEFAULT_DATABASE = database_for('claude-desktop')
 
@@ -99,8 +99,8 @@ Git-origin project default. This retrieves recorded turns, decisions and session
 from Aura across agents. No mcp_source_id or saved Cypher is needed. Optionally
 set source_agent="codex" or "claude-code"; omit to recall both. get_session with
 context_kind="Code" expands a returned session_key; get_evidence with
-context_kind="Code" and turn_id expands a turn. Retrieval is lexical plus recency,
-not vector search. Empty retrieval does not prove no other session exists; inspect
+context_kind="Code" and turn_id expands a turn. Retrieval uses indexed full-text
+relevance and recency, with a disclosed lexical fallback, not vector search. Empty retrieval does not prove no other session exists; inspect
 returned sessions. Report degraded state and pending local origin honestly.
 New turns carry observed Git anchors and provenance; a dirty tree means the
 commit does not fully describe the captured work. Old turns remain unknown.
@@ -130,8 +130,15 @@ def call(run, sync, name, args, agent="claude-desktop", project=None):
     if name == "flush_memory":
         return sync.flush() if sync else {"queued": False, "state": "disabled"}
     project = clean(args.get("project") or project, 512, "project")
-    coding = args.get('context_kind') == 'Code' or (
-        agent in ('codex','claude-code') and not args.get('mcp_source_id') and args.get('context_kind') != 'Chat')
+    recall_tool = name in ('recall_context','get_session','get_evidence')
+    work_kind = context_kind(project, agent, args.get('context_kind')) if recall_tool else None
+    if work_kind is None and recall_tool and run:
+        # Stored provenance supports clients launched outside a checkout. Mixed
+        # Chat/Code collections require an explicit choice, rather than guessing.
+        labels = run('MATCH(p:ContextProject {name:$input.project}) RETURN labels(p) AS labels', {'project':project})
+        if len(labels)==1 and 'Code' in labels[0]['labels'] and 'Chat' not in labels[0]['labels']:
+            work_kind = 'Code'
+    coding = work_kind == 'Code' and (not args.get('mcp_source_id') or args.get('context_kind')=='Code')
     if coding and name in ('recall_context','get_session','get_evidence'):
         from relate_tap.recall_client import request
         operation={'get_session':'session','get_evidence':'evidence','recall_context':'recall'}[name]

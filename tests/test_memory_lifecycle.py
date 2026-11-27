@@ -1,5 +1,8 @@
 from pathlib import Path
+import json
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +15,30 @@ from relate_tap.git_state import capture_git
 
 
 class GitStateTest(unittest.TestCase):
+    def test_native_stdio_capture_advertises_identity_and_returns_observed_git(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);repo=root/'checkout';repo.mkdir()
+            def git(*args):return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True)
+            git('init');git('remote','add','origin','git@github.com:team/backend.git')
+            git('-c','user.name=Test','-c','user.email=test@example.com','commit','--allow-empty','-m','initial')
+            requests=[{'id':1,'method':'initialize','params':{}},
+                {'id':2,'method':'tools/call','params':{'name':'record_turn','arguments':{
+                    'session':'native','turn':'one','prompt':'Check Git','response':'Verified',
+                    'memories':[{'kind':'decision','subject':'Identity','body':'Keep owners separate'}]}}}]
+            command=[sys.executable,str(Path(__file__).resolve().parents[1]/'memory_mcp.py'),
+                     '--agent','codex','--no-aura','--database',str(root/'native.rl')]
+            result=subprocess.run(command,cwd=repo,input=''.join(json.dumps(r)+'\n' for r in requests),
+                                  capture_output=True,text=True,timeout=15)
+            self.assertEqual(result.returncode,0,result.stderr)
+            replies=[json.loads(line)['result'] for line in result.stdout.splitlines()]
+            self.assertIn('git:github.com/team/backend',replies[0]['instructions'])
+            saved=json.loads(replies[1]['content'][0]['text'])
+            self.assertEqual(saved['git']['git_source'],'server_observed')
+            self.assertFalse(saved['git']['git_dirty'])
+            self.assertEqual(len(saved['memory_ids']),1)
+            self.assertEqual(direct_query(root/'native.rl',
+                'MATCH(p:ContextProject) RETURN p.name AS project',{}),[{'project':'git:github.com/team/backend'}])
+
     def test_observed_clean_dirty_detached_and_wrong_repository(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo=Path(tmp)
@@ -84,6 +111,22 @@ class MemoryLifecycleTest(unittest.TestCase):
             self.assertTrue(not rows or rows[0]['next_links']==0)
         self.assertEqual(direct_query(self.db,'MATCH(t:ContextTurn) RETURN count(t) AS n',{}),[{'n':1}])
         self.assertEqual(direct_query(self.db,'MATCH(e:ContextMemoryEvent) RETURN count(e) AS n',{}),[{'n':0}])
+
+    def test_unreplicated_resolution_is_pending_even_when_memory_id_already_exists_in_aura(self):
+        original,_=self.record('one',memories=[{'kind':'open_item','subject':'Work','body':'Pending work'}])
+        remote=Path(self.tmp.name)/'remote.rl';shutil.copyfile(self.db,remote)
+        old=original['memories'][0]['id']
+        self.record('two',memory_events=[{'memory_id':old,'kind':'resolved','reason':'Verified locally'}])
+        local=self.db
+        class Sources:
+            def public(self):return [{'id':'local','kind':'relate','name':'codex.rl'}]
+            def query(self,source,q,p):return {'rows':direct_query(local,q.replace('$','$input.'),p)}
+        recall=CodingRecall(lambda q,**p:direct_query(remote,q.replace('$','$input.'),p),Sources())
+        result=recall.request('recall',{'project':'repo'})
+        self.assertEqual(result['memories'][0]['status'],'open')
+        pending=[r for r in result['pending_local'] if r['record_type']=='memories']
+        self.assertEqual([m['status'] for m in pending],['resolved'])
+        self.assertEqual(pending[0]['state'],'pending_replication')
 
     def test_missing_git_is_unknown_and_retry_keeps_first_server_anchor(self):
         state={'git_commit':'a'*40,'git_branch':'main','git_dirty':False,'git_source':'server_observed'}

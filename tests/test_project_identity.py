@@ -19,10 +19,9 @@ class ProjectIdentityTest(unittest.TestCase):
         self.assertEqual(origin_key('git@gitlab.com:group/subgroup/Backend.git'),
                          'git:gitlab.com/group/subgroup/Backend')
         self.assertNotEqual(origin_key('ssh://git@host:2222/team/repo'), origin_key('ssh://git@host/team/repo'))
-        for origin in ['https://host/a/../repo', 'https://host/a/%2E%2E/repo', 'https://host/a/']:
-            # A trailing slash is allowed; traversal is not.
-            if '..' in origin or '%2E' in origin:
-                with self.assertRaises(ValueError): origin_key(origin)
+        self.assertNotEqual(origin_key('ssh://[::1]:2222/team/repo'), origin_key('ssh://[::1:2222]/team/repo'))
+        for origin in ['https://host/a/../repo', 'https://host/a/%2E%2E/repo', 'user:password@host:team/repo']:
+            with self.assertRaises(ValueError): origin_key(origin)
 
     def test_local_repository_identity_does_not_collapse_equal_directory_names(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -35,6 +34,8 @@ class ProjectIdentityTest(unittest.TestCase):
             self.assertNotEqual(*keys)
             self.assertTrue(all(k.startswith('git-local:') and tmp not in k for k in keys))
             self.assertEqual(origin_key('file://'+str(path)), origin_key(str(path)))
+            with patch('relate_tap.project_identity.socket.gethostname',return_value='other-host'):
+                self.assertNotEqual(discover_project(path),keys[-1])
 
     def test_binding_is_explicit_additive_idempotent_and_rejects_ambiguous_sessions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,7 +100,7 @@ class ProjectIdentityTest(unittest.TestCase):
             return []
         result=memory_mcp.respond(run,None,{'method':'tools/list'},'claude-code','neo4j-semantic-robot')
         self.assertNotIn('project',result['tools'][0]['inputSchema']['required'])
-        with patch('relate_tap.recall_client.request',return_value={'state':'ready'}) as request:
+        with patch('memory_mcp.context_kind',return_value='Code'), patch('relate_tap.recall_client.request',return_value={'state':'ready'}) as request:
             memory_mcp.call(run,None,'recall_context',{},'claude-code','neo4j-semantic-robot')
         self.assertEqual(request.call_args.args[2],'neo4j-semantic-robot')
         self.assertEqual(request.call_args.kwargs['agent'],'claude-code')

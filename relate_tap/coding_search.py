@@ -42,9 +42,15 @@ class CodingSearch:
                 rows = self.run(BACKFILL, batch=batch)
                 count = rows[0]['indexed'] if rows else 0
                 states = self.run(INDEX_STATE)
-                online = bool(states) and states[0]['state'] == 'ONLINE'
-                self.status = {'state':'ready' if online and count < batch else 'building',
-                               'indexed':count}
+                if not states:
+                    self.created = False
+                    self.status = {'state':'unavailable','error':'MissingIndex'}
+                elif states[0]['state']=='FAILED':
+                    self.status = {'state':'unavailable','error':'IndexFailed'}
+                else:
+                    online = states[0]['state']=='ONLINE'
+                    self.status = {'state':'ready' if online and count < batch else 'building',
+                                   'indexed':count}
             except Exception as exc:
                 self.created = False
                 self.status = {'state':'unavailable', 'error':type(exc).__name__}

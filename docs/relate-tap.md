@@ -91,7 +91,7 @@ set a global agent identity. The project defaults to a canonical Git origin key,
 such as `git:github.com/graphadvantage/neo4j-relate-context`. Host and full path
 are retained; URL credentials, query strings and fragments are not. SSH and HTTPS
 transport variants share a key. Without a usable origin, a `git-local:` hash of
-the resolved Git common directory keeps worktrees together without publishing
+the host name and resolved Git common directory keeps worktrees together without publishing
 private paths. Outside Git the working-directory name remains an unclassified
 fallback. MCP tools can omit `project` to use this default.
 
@@ -526,7 +526,7 @@ instructions; configuring MCP alone records only calls actually made through it.
 `recall_context(context_kind="Code", query="design decisions")` searches existing
 Aura coding turns and returns author/session/turn IDs, prompt/response excerpts,
 reasoning summaries when recorded, recent sessions and structured memories.
-Code agents default to this mode even without a query. The Git project is the
+Repository-attributed requests default to this mode even without a query. The Git project is the
 scope; no domain MCP identifier is required. `source_agent` optionally narrows
 authorship, while the default includes all agents. Code reads require Aura
 credentials but do not require an OpenAI key or make embedding requests.
@@ -537,6 +537,15 @@ expands an individual turn. Both enforce repository and Code-session scope.
 Responses report their full-text or fallback retrieval mode, carry unverified evidence provenance,
 and explicitly distinguish failed retrieval, no topic match, existing sessions
 and pending local records. No historical decision or commit is invented.
+
+Recall routing uses explicit `context_kind` first, then matching Git provenance,
+then an unambiguous locally stored Code-only project label. It does not maintain
+a coding-agent allowlist. Desktop defaults to Chat; mixed or unknown projects
+require explicit `context_kind: "Code"` for shared coding recall. Supplying a
+domain `mcp_source_id` keeps the Chat retrieval path unless Code is explicitly
+selected (which rejects that incompatible scope). Transport client discovery and
+skill installation still have their own supported-client mappings; an unfamiliar
+MCP client can use `--agent` for capture routing.
 
 #### Coding full-text indexing
 

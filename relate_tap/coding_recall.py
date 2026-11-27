@@ -172,7 +172,12 @@ class CodingRecall:
                         rows=self.sources.query(source['id'],statement,parameters)['rows']
                         for row in rows:
                             identity=row.get('turn_id') or row.get('message_id') or row.get('id')
-                            if not any((r.get('turn_id') or r.get('message_id') or r.get('id'))==identity for r in result[key]):
+                            remote=next((r for r in result[key] if (r.get('turn_id') or r.get('message_id') or r.get('id'))==identity),None)
+                            # Existing session/memory IDs can have newer local
+                            # evidence even though the original node replicated.
+                            changed=remote is not None and any(row.get(field)!=remote.get(field) for field in
+                                ('status_event_id','git_commit','git_dirty','last_seen','messages'))
+                            if remote is None or changed:
                                 pending[key].append({**row,'origin':source['name'],'state':'pending_replication'})
                     except Exception as exc:
                         result['errors'].append({'source':source['name'],'error':type(exc).__name__})

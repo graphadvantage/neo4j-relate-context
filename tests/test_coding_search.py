@@ -42,6 +42,12 @@ class CodingSearchTest(unittest.TestCase):
         self.assertEqual(restarted.prepare(batch=10),{'state':'ready','indexed':2})
         self.assertEqual(restarted.prepare(batch=10),{'state':'ready','indexed':0})
 
+    def test_missing_index_is_disclosed_and_recreated_on_next_maintenance_pass(self):
+        self.search.prepare()
+        self.run('DROP INDEX context_code_turns_text')
+        self.assertEqual(self.search.prepare()['state'],'unavailable')
+        self.assertEqual(self.search.prepare()['state'],'ready')
+
     def test_query_operators_are_quoted_and_empty_search_uses_recent_history(self):
         self.assertEqual(search_query('owner OR *:* project:else'), '"owner" OR "OR" OR "project" OR "else"')
         self.assertIsNone(search_query('***'))

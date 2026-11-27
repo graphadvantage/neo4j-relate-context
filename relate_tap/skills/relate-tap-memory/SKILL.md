@@ -32,7 +32,8 @@ For repository work, use `recall_context` with `context_kind: "Code"` and an
 optional task/question as `query`. Omit `project` to accept the server's Git-origin
 default. Omit `source_agent` to search all agents, or set it to `codex` or
 `claude-code` to narrow authorship. Do not supply `mcp_source_id` for coding recall.
-Coding agents default to this shared mode even for a query-free startup lookup.
+Repository-attributed requests default to this shared mode even for query-free
+startup lookup. Unknown or mixed projects should explicitly select Code.
 
 This reads existing coding turns, sessions and structured memories from Aura.
 Retrieval uses full-text relevance and recency when indexed, with an explicitly

@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import socket
 import subprocess
 from urllib.parse import unquote, urlsplit
 
@@ -12,7 +13,8 @@ PROJECT_LIMIT = 512
 
 def local_key(path):
     # Do not publish private filesystem paths as enterprise project names.
-    return 'git-local:' + hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()
+    identity = [socket.gethostname(), str(Path(path).resolve())]
+    return 'git-local:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
 def origin_key(origin, directory=None):
@@ -34,7 +36,8 @@ def origin_key(origin, directory=None):
         parsed = urlsplit(origin)
         if parsed.scheme not in ('https', 'http', 'ssh', 'git') or not parsed.hostname:
             raise ValueError('Unsupported Git origin; configure an explicit project key')
-        host = parsed.hostname.lower()
+        hostname = parsed.hostname.lower()
+        host = '['+hostname+']' if ':' in hostname else hostname.encode('idna').decode('ascii')
         port = parsed.port
         if port and port != {'https':443, 'http':80, 'ssh':22, 'git':9418}[parsed.scheme]:
             host += ':' + str(port)
@@ -43,11 +46,11 @@ def origin_key(origin, directory=None):
         scp = re.fullmatch(r'(?:[^/@:]+@)?([^/:]+):(.+)', origin)
         if scp and not re.match(r'^[A-Za-z]:[\\/]', origin):
             host, path = scp.groups()
-            host = host.lower()
+            host = host.encode('idna').decode('ascii').lower()
         else:
             return local_key(base / origin)
     parts = unquote(path).strip('/').split('/')
-    if any(not part or part in ('.', '..') or re.search(r'[\s?#\\]', part) for part in parts):
+    if any(not part or part in ('.', '..') or re.search(r'[\s?#\\@:]', part) for part in parts):
         raise ValueError('Invalid Git origin path')
     parts[-1] = parts[-1].removesuffix('.git')
     if not parts[-1]:

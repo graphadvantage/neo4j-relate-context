@@ -227,8 +227,8 @@ organized under their respective `ContextProject` nodes. Git-attributed projects
 and sessions receive the secondary `Code` label. The native worker pushes this
 database to the configured enterprise Aura instance.
 
-Repositories without a usable origin use a `git-local:` hash of the Git common
-directory. This keeps worktrees together without publishing local paths. Local
+Repositories without a usable origin use a `git-local:` hash of the host name
+and Git common directory. This keeps worktrees together without publishing local paths. Local
 keys are specific to that checkout and machine. Explicit `--project` overrides
 remain exact user-selected scopes. Existing short-name history is retained and
 never silently included in canonical recall; see
@@ -295,8 +295,10 @@ Coding recall is shared across agents through Aura. For example:
 ```
 
 Pass this to `recall_context`; omit `project` to accept the Git-origin default.
-Omit `source_agent` to recall all agents' work. Claude Code and Codex default to
-Code recall even without a query. No domain MCP name or saved Cypher is required.
+Omit `source_agent` to recall all agents' work. Matching Git provenance or a
+stored Code-only project defaults to Code recall even without a query, regardless
+of agent name. Use explicit `context_kind` for mixed or unknown projects. No
+domain MCP name or saved Cypher is required.
 Results include recent sessions, matching recorded turns and structured memories,
 with author/session/turn provenance. Use `get_evidence` with `turn_id` or
 `get_session` with the returned `session_key`/session `id`, both with

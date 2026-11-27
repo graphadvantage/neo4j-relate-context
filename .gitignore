@@ -220,6 +220,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Local Aura credentials and agent memory
+.DS_Store
+.claude/settings.local.json
 /connections/
 /relate-dbs/*.rl*
 
