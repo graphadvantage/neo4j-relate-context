@@ -310,6 +310,19 @@ do not mean no sessions exist; inspect `sessions`, response state and
 `pending_local`. Chatbot intent/Cypher recall retains its separate MCP-scoped
 vector/full-text path.
 
+New Code turns record full Git commit, branch, working-tree modification state
+and provenance when observed. Server observation is limited to the matching
+repository; historical unknowns remain unknown. Dirty-state and freshness
+annotations describe the evidence, without asserting it is current.
+
+Memories retain their original evidence when resolved, reopened or superseded.
+`record_turn` returns `memory_ids`; a new memory can explicitly resolve or
+replace an existing one using `resolves` or `supersedes`, while `memory_events`
+records standalone lifecycle changes. Recall derives status from append-only
+events and ranks active memories ahead of resolved or superseded history. See
+[freshness and supersession](docs/freshness-and-supersession.md) for the schema,
+scope checks and replication behavior.
+
 ## Aura embedding smoke test
 
 Set `OPENAI_API_KEY` alongside the `AURA_*` connection values in the ignored

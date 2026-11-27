@@ -79,9 +79,15 @@ MATCH (:ContextProject {name: $input.project})-[:HAS_SESSION]->(s:ContextSession
       -[:HAS_MEMORY]->(f:ContextMemory)
 OPTIONAL MATCH (f)-[:SUPPORTED_BY]->(m:ContextMessage)
 WITH s, f, max(m.timestamp) AS timestamp, collect(m.position) AS evidence
+OPTIONAL MATCH(f)-[:HAS_STATUS_EVENT]->(event:ContextMemoryEvent)
+WITH s,f,timestamp,evidence,event ORDER BY event.at DESC,event.id DESC
+WITH s,f,timestamp,evidence,head(collect(event)) AS latest
 RETURN s.session_id AS session, s.source AS source, f.kind AS kind,
-       f.subject AS subject, f.body AS body, evidence, timestamp, s.username AS username
-ORDER BY timestamp DESC, f.id
+       f.id AS id,f.subject AS subject, f.body AS body, evidence, timestamp, s.username AS username,
+       coalesce(latest.kind,'open') AS status,latest.reason AS status_reason,
+       latest.id AS status_event_id,latest.replacement_id AS replacement_id
+ORDER BY CASE WHEN status IN ['open','reopened'] THEN 0 WHEN status='resolved' THEN 1 ELSE 2 END,
+         timestamp DESC, f.id
 LIMIT $input.limit
 """
 
@@ -154,14 +160,22 @@ RETURN count(*) AS tools
 """
 
 EXCHANGE = """
+OPTIONAL MATCH (:ContextProject {name:$input.project})-[:HAS_SESSION]->(prior:ContextSession)-[:HAS_MEMORY]->(existing:ContextMemory)
+WHERE existing.id IN [event IN $input.memory_events | event.memory_id] + [event IN $input.memory_events | event.replacement_id]
+  AND ($input.context_kind IS NULL OR $input.context_kind <> 'Code' OR (prior:Code AND NOT prior:Chat))
+WITH collect(DISTINCT existing.id) AS existing_ids
+WHERE all(event IN $input.memory_events WHERE event.memory_id IN existing_ids
+  AND (event.replacement_id IS NULL OR event.replacement_id IN existing_ids
+       OR event.replacement_id IN [memory IN $input.memories | memory.id]))
 MERGE (p:ContextProject {name: $input.project})
 MERGE (s:ContextSession {id: $input.key})
 SET s.source = $input.source, s.session_id = $input.session,
     s.username = $input.username, s.identity_source = 'os'
-SET s.git_commit = coalesce($input.git_commit, s.git_commit)
 MERGE (p)-[:HAS_SESSION]->(s)
 MERGE (t:ContextTurn {id: $input.turn_key})
-ON CREATE SET t.fingerprint = $input.fingerprint
+ON CREATE SET t.fingerprint = $input.fingerprint,
+              t.git_commit = $input.git_commit, t.git_branch = $input.git_branch,
+              t.git_dirty = $input.git_dirty, t.git_source = $input.git_source
 MERGE (s)-[:HAS_TURN]->(t)
 WITH p, s, t
 WHERE t.fingerprint = $input.fingerprint
@@ -194,7 +208,7 @@ CALL (t, reasoning) {
     MERGE (reasoning)-[:SUPPORTED_BY]->(evidence)
     RETURN count(*) AS reasoning_evidence
 }
-WITH p, s
+WITH p, s, t
 CALL () {
 """ + TOOL_GRAPH + """
 }
@@ -211,10 +225,29 @@ CALL (s) {
     UNWIND $input.memories AS row
     MATCH (s)-[:HAS_MESSAGE]->(m:ContextMessage {id: row.message_id})
     MERGE (f:ContextMemory {id: row.id})
-    ON CREATE SET f.kind = row.kind, f.subject = row.subject, f.body = row.body
+    ON CREATE SET f.kind = row.kind, f.subject = row.subject, f.body = row.body,
+                  f.git_commit = $input.git_commit, f.git_dirty = $input.git_dirty,
+                  f.git_source = $input.git_source
     MERGE (s)-[:HAS_MEMORY]->(f)
     MERGE (f)-[:SUPPORTED_BY]->(m)
     RETURN count(*) AS facts
+}
+WITH p, s, t
+CALL (p, t) {
+    UNWIND $input.memory_events AS row
+    MATCH (p)-[:HAS_SESSION]->(:ContextSession)-[:HAS_MEMORY]->(memory:ContextMemory {id:row.memory_id})
+    WITH DISTINCT t, row, memory
+    MERGE (event:ContextMemoryEvent {id:row.id})
+    ON CREATE SET event.kind=row.kind, event.reason=row.reason, event.at=$input.timestamp,
+                  event.git_commit=$input.git_commit, event.git_source=$input.git_source,
+                  event.replacement_id=row.replacement_id
+    MERGE (memory)-[:HAS_STATUS_EVENT]->(event)
+    MERGE (event)-[:RECORDED_IN]->(t)
+    WITH row, memory
+    OPTIONAL MATCH (replacement:ContextMemory {id:row.replacement_id})
+    FOREACH (_ IN CASE WHEN row.kind='superseded' AND replacement IS NOT NULL THEN [1] ELSE [] END |
+        MERGE (replacement)-[:SUPERSEDES]->(memory))
+    RETURN count(*) AS transitions
 }
 WITH p, s
 FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET p:Code, s:Code)
@@ -230,6 +263,8 @@ def exchange(project, source, args):
         raise ValueError("Expected a JSON exchange object")
     from relate_tap.bootstrap import context_kind
     work_kind = context_kind(project, source, args.get("context_kind"))
+    from relate_tap.git_state import capture_git
+    git = capture_git(project, work_kind, args)
     session = clean(args.get("session"), 160, "session")
     turn = clean(args.get("turn"), 160, "turn")
     key = digest([project, source, session])
@@ -283,6 +318,7 @@ def exchange(project, source, args):
         mentions.append({"id": digest([project, kind, name.casefold()]), "name": name,
                          "type": kind, "message_id": evidence[item.get("evidence", "prompt")]})
     facts = []
+    transitions = []
     for item in memories:
         kind = item.get("kind")
         if kind not in MEMORY_KINDS:
@@ -292,9 +328,39 @@ def exchange(project, source, args):
         message_id = evidence[item.get("evidence", "prompt")]
         facts.append({"id": digest([key, turn, kind, subject, body]), "kind": kind,
                       "subject": subject, "body": body, "message_id": message_id})
+        for field, status in (('resolves','resolved'),('supersedes','superseded')):
+            if field in item:
+                transitions.append({'memory_id':item[field], 'kind':status,
+                                    'reason':body, 'replacement_id':facts[-1]['id']})
     turn_key = digest([key, turn])
+    explicit = args.get('memory_events', [])
+    if not isinstance(explicit,list) or len(explicit)>100 or any(not isinstance(e,dict) for e in explicit):
+        raise ValueError('memory_events must contain at most 100 objects')
+    transitions.extend(dict(event) for event in explicit)
+    if len(transitions)>100:
+        raise ValueError('At most 100 memory lifecycle events are allowed')
+    targets = set()
+    for event in transitions:
+        event['memory_id'] = clean(event.get('memory_id'),160,'memory_id')
+        if event['memory_id'] in targets:
+            raise ValueError('Only one lifecycle event per memory is allowed in a turn')
+        targets.add(event['memory_id'])
+        if event.get('kind') not in ('resolved','superseded','reopened'):
+            raise ValueError('Invalid memory event kind')
+        event['reason'] = clean(event.get('reason'),4000,'event reason')
+        replacement = event.get('replacement_id')
+        event['replacement_id'] = clean(replacement,160,'replacement_id') if replacement is not None else None
+        if event['kind']=='superseded' and not event['replacement_id']:
+            raise ValueError('Superseded memories require replacement_id')
+        if event['replacement_id']==event['memory_id']:
+            raise ValueError('A memory cannot replace itself')
+        event['id'] = digest([turn_key,event['memory_id'],event['kind']])
     reasoning = reasoning_record(turn_key, args)
     fingerprint_parts = [messages, mentions, facts]
+    if transitions:
+        fingerprint_parts.append(transitions)
+    if any(field in args for field in ('git_commit','git_branch','git_dirty')):
+        fingerprint_parts.append(git)
     if any(field in args for field in REASONING_FIELDS):
         fingerprint_parts.append(reasoning)
     return {"project": project, "source": source, "session": session, "key": key, "context_kind": work_kind,
@@ -302,7 +368,7 @@ def exchange(project, source, args):
             "turn_key": turn_key, "fingerprint": digest(fingerprint_parts), "reasoning": reasoning,
             "timestamp": datetime.now(timezone.utc).isoformat(), "messages": messages,
             "tools": tool_records(project, source, messages),
-            "entities": mentions, "memories": facts, "git_commit": None}
+            "entities": mentions, "memories": facts, "memory_events":transitions, **git}
 
 
 REASONING_FIELDS = ("reasoning_summary", "model", "model_version", "model_effort", "input_tokens", "output_tokens", "total_tokens", "elapsed_ms")

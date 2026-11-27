@@ -8,10 +8,13 @@ promotion-relevant graph in memory and prove reachability after failures,
 process restarts, and repeated runs.
 """
 import unittest
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 
 from relate_tap.intent_recall import IntentRecall, CANDIDATES, REJECT, EMBED, LINK
 from relate_tap.intent_model import MODEL, DIMENSIONS, VALIDATOR_VERSION, candidate
+from memory_graph import direct_query
 
 
 def row(prompt_id, query_id, timestamp, cypher='MATCH (n) RETURN n',
@@ -56,6 +59,35 @@ class FakeAura:
 
 
 class PromotionProgressTest(unittest.TestCase):
+    def test_rejection_queries_advance_a_real_persisted_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database=Path(tmp)/'progress.rl'
+            fixtures=[row('bad-'+str(i),'q-'+str(i),'2026-01-01',cypher='MATCH(n) RETURN ...') for i in range(20)]
+            fixtures.append(row('valid','q-valid','2026-02-01'))
+            direct_query(database,'''MERGE(p:ContextProject {name:'repo'})
+                MERGE(s:ContextSession {id:'s',source:'claude-desktop',session_id:'s'})
+                MERGE(p)-[:HAS_SESSION]->(s)
+                WITH s UNWIND $input.rows AS row
+                CREATE(t:ContextTurn {id:row.turn_id})
+                CREATE(u:ContextMessage {id:row.prompt_id,body:row.question,kind:'prompt',role:'user',timestamp:row.timestamp})
+                CREATE(m:ContextMessage {id:row.query_id+'-message',tool:row.tool})
+                CREATE(q:ContextQuery {id:row.query_id,cypher:row.cypher})
+                CREATE(s)-[:HAS_TURN]->(t)
+                CREATE(t)-[:HAS_MESSAGE]->(u)
+                CREATE(t)-[:HAS_MESSAGE]->(m)
+                CREATE(m)-[:EXECUTES_QUERY]->(q)''',{'rows':fixtures},read_only=False)
+            def run(query,**params):
+                return direct_query(database,query.replace('$','$input.'),params,read_only=query!=REJECT)
+            params={'model':MODEL,'validator':VALIDATOR_VERSION,'limit':20}
+            first=run(CANDIDATES,**params)
+            self.assertEqual(len(first),20)
+            self.assertTrue(all(candidate(r) is None for r in first))
+            rejected=[{'prompt_id':r['prompt_id'],'query_id':r['query_id'],'reason':'incomplete'} for r in first]
+            for _ in range(2):run(REJECT,rows=rejected,validator=VALIDATOR_VERSION,model=MODEL)
+            self.assertEqual([r['query_id'] for r in run(CANDIDATES,**params)],['q-valid'])
+            self.assertEqual(len(run(CANDIDATES,**{**params,'validator':VALIDATOR_VERSION+1})),20)
+            self.assertEqual(direct_query(database,'MATCH(r:ContextIntentRejection) RETURN count(r) AS n',{}),[{'n':20}])
+
     def setUp(self):
         patcher = patch.dict('os.environ', {'OPENAI_API_KEY': 'unit-test-placeholder'})
         patcher.start()

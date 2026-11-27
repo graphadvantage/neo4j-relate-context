@@ -1,9 +1,31 @@
-# Freshness and supersession (design)
+# Freshness and supersession
 
-Status: **design only**. Do not implement until repository identity is settled,
-because turn/session keys and project scoping (bare name vs canonical origin)
-determine how git state and memory lifecycle scope across repositories. Settling
-identity first avoids reworking keys and edges this design relies on.
+Status: **implemented after canonical repository identity**. The original
+proposal is retained below as design history. Implementation choices:
+
+- Git anchors are immutable per turn. Server observation requires the capture
+  project to match the current canonical Git identity; otherwise fields remain
+  unknown unless explicitly client-reported. Partial client reports do not get
+  silently completed from the server's potentially different checkout.
+- Session anchors are derived from the latest recorded turn at read time,
+  avoiding stale session properties under skip-existing Aura replication.
+- `record_turn` returns new `memory_ids`. New memories can specify `resolves`
+  or `supersedes`; `memory_events` can explicitly record `resolved`, `superseded`
+  or `reopened`, with a reason and a replacement ID for supersession.
+- Lifecycle targets and replacements must be in the same project (or be a new
+  memory in the recording turn). Code transitions cannot target Chat-only or
+  ambiguous mixed sessions. Invalid references reject the whole capture.
+- Events are append-only `ContextMemoryEvent` nodes, linked to the memory and
+  recording turn, with a `SUPERSEDES` edge for explicit replacement. Retry IDs
+  are stable; original evidence remains intact. The new label has an Aura merge
+  key. Existing historical nodes are never backfilled with guessed Git state.
+- Recall returns derived status and latest event provenance. Open/reopened
+  memories rank before resolved, then superseded memories; none are deleted.
+  Freshness is `unknown`, `working_tree_modified`, `working_tree_unknown` or
+  `requires_live_git_verification`. There is no automatic ancestry check or
+  assertion that a historical claim is current.
+
+## Original proposal
 
 ## Problem
 

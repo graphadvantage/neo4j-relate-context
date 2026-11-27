@@ -14,7 +14,12 @@ WHERE ($source_agent IS NULL OR s.source=$source_agent)
 SESSIONS = BASE + '''
 OPTIONAL MATCH (s)-[:HAS_MESSAGE]->(m:ContextMessage)
 WITH s,max(m.timestamp) AS last_seen,count(DISTINCT m) AS messages
-RETURN s.id AS id,s.session_id AS session,s.source AS agent,s.git_commit AS git_commit,
+OPTIONAL MATCH(s)-[:HAS_TURN]->(t:ContextTurn)-[:HAS_MESSAGE]->(u:ContextMessage {kind:'prompt'})
+WITH s,last_seen,messages,t,u ORDER BY u.timestamp DESC,t.id DESC
+WITH s,last_seen,messages,head(collect(t)) AS latest
+RETURN s.id AS id,s.session_id AS session,s.source AS agent,latest.git_commit AS git_commit,
+       latest.git_branch AS git_branch,latest.git_dirty AS git_dirty,
+       coalesce(latest.git_source,'unavailable') AS git_source,
        last_seen,messages ORDER BY last_seen DESC,s.id LIMIT $limit
 '''
 TURNS = BASE + '''
@@ -28,6 +33,7 @@ RETURN t.id AS turn_id,s.id AS session_key,s.session_id AS session,s.source AS a
        u.id AS prompt_id,substring(u.body,0,1600) AS prompt,
        a.id AS response_id,substring(a.body,0,4000) AS response,
        r.summary AS reasoning_summary,u.timestamp AS timestamp,t.git_commit AS git_commit,
+       t.git_branch AS git_branch,t.git_dirty AS git_dirty,coalesce(t.git_source,'unavailable') AS git_source,
        size(u.body)>1600 OR size(a.body)>4000 AS evidence_truncated
 ORDER BY relevance DESC,timestamp DESC,turn_id LIMIT $limit
 '''
@@ -35,9 +41,16 @@ MEMORIES = BASE + '''
 MATCH(s)-[:HAS_MEMORY]->(f:ContextMemory)
 OPTIONAL MATCH(f)-[:SUPPORTED_BY]->(m:ContextMessage)
 WITH s,f,max(m.timestamp) AS timestamp,collect(DISTINCT m.id) AS evidence
+OPTIONAL MATCH(f)-[:HAS_STATUS_EVENT]->(event:ContextMemoryEvent)
+WITH s,f,timestamp,evidence,event ORDER BY event.at DESC,event.id DESC
+WITH s,f,timestamp,evidence,head(collect(event)) AS latest
 RETURN f.id AS id,f.kind AS kind,f.subject AS subject,f.body AS body,s.source AS agent,
-       s.id AS session_key,s.session_id AS session,timestamp,evidence
-ORDER BY timestamp DESC,f.id LIMIT $limit
+       s.id AS session_key,s.session_id AS session,timestamp,evidence,
+       f.git_commit AS git_commit,f.git_dirty AS git_dirty,coalesce(f.git_source,'unavailable') AS git_source,
+       coalesce(latest.kind,'open') AS status,latest.id AS status_event_id,
+       latest.reason AS status_reason,latest.at AS status_at,latest.replacement_id AS replacement_id
+ORDER BY CASE WHEN status IN ['open','reopened'] THEN 0 WHEN status='resolved' THEN 1 ELSE 2 END,
+         timestamp DESC,f.id LIMIT $limit
 '''
 NOTES = """MATCH(p:ContextProject:Code {name:$project})-[:HAS_NOTE]->(n:ContextNote)
 WHERE $source_agent IS NULL OR n.source=$source_agent
@@ -49,9 +62,11 @@ MESSAGES = BASE + '''
 WITH s WHERE s.id=$session OR s.session_id=$session
 MATCH(s)-[:HAS_MESSAGE]->(m:ContextMessage)
 WHERE $before_position IS NULL OR m.position<$before_position
+OPTIONAL MATCH(t:ContextTurn)-[:HAS_MESSAGE]->(m)
 RETURN s.id AS session_key,s.session_id AS session,s.source AS agent,
        m.id AS message_id,m.position AS position,m.role AS role,m.kind AS kind,
-       m.body AS body,m.timestamp AS timestamp
+       m.body AS body,m.timestamp AS timestamp,t.git_commit AS git_commit,
+       t.git_branch AS git_branch,t.git_dirty AS git_dirty,coalesce(t.git_source,'unavailable') AS git_source
 ORDER BY m.position DESC,m.id LIMIT $limit
 '''
 EVIDENCE = BASE + '''
@@ -59,7 +74,8 @@ MATCH(s)-[:HAS_TURN]->(t:ContextTurn {id:$turn_id})-[:HAS_MESSAGE]->(m:ContextMe
 OPTIONAL MATCH(t)-[:HAS_REASONING]->(r:ContextReasoning)
 RETURN s.id AS session_key,s.source AS agent,t.id AS turn_id,m.id AS message_id,
        m.position AS position,m.role AS role,m.body AS body,m.timestamp AS timestamp,
-       r.summary AS reasoning_summary,t.git_commit AS git_commit
+       r.summary AS reasoning_summary,t.git_commit AS git_commit,
+       t.git_branch AS git_branch,t.git_dirty AS git_dirty,coalesce(t.git_source,'unavailable') AS git_source
 ORDER BY m.position,m.id LIMIT $limit
 '''
 
@@ -136,6 +152,10 @@ class CodingRecall:
         if result['state']=='ready' and not any(result[key] for key,_,_ in queries):
             result['state']='pending_replication' if any(pending.values()) else 'empty'
         if not result['errors']:result.pop('errors')
+        from .git_state import freshness
+        for key in ('sessions','matches','memories','messages','evidence','pending_local'):
+            for row in result.get(key,[]):
+                row['freshness']=freshness(row.get('git_commit'),row.get('git_dirty'))
         result=bounded(result,max_chars)
         if operation=='session':
             positions=[r['position'] for r in result['messages']]
