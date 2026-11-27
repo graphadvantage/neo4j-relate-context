@@ -1,3 +1,4 @@
+import { loadGraphStyles, saveGraphStyles } from './playground-style-storage';
 import type { GraphStyleRule } from '@neo4j-ndl/react-graph';
 import { PlaygroundSidebar } from './PlaygroundSidebar';
 import { defaultQueries } from './playground-schema';
@@ -9,23 +10,27 @@ import { Topology, type Snapshot } from './Topology';
 import { reportConsoleError, flushConsoleErrors } from './diagnostics';
 
 type Source = { id: string; name: string; kind: string };
-const initial = 'MATCH (n) RETURN n LIMIT 100';
+const initial = defaultQueries[0].query;
+const sourceNames:Record<string,string>={'enterprise-relate-memory':'enterprise-relate-memory','codex.rl':'codex.rl','claude-code.rl':'claude-code','claude-desktop.rl':'claude-desktop','capture':'tap capture.rl'};
+const sourceOrder=['enterprise-relate-memory','codex.rl','claude-code.rl','claude-desktop.rl'];
+const sourceKey=(s:Source)=>s.id==='enterprise-relate-memory'||s.id==='capture'?s.id:s.name;
+const sourceRank=(s:Source)=>s.id==='capture'?Number.MAX_SAFE_INTEGER:sourceOrder.includes(sourceKey(s))?sourceOrder.indexOf(sourceKey(s)):sourceOrder.length;
 export function App() {
   const [tab, setTab] = useState('topology');
   const [snapshot, setSnapshot] = useState<Snapshot>({ events: [], errors: [], window: 1000, replication: { state: 'disabled' } });
   const [live, setLive] = useState(false);
   const [sources, setSources] = useState<Source[]>([]);
-  const [source, setSource] = useState('capture');
+  const [source, setSource] = useState('enterprise-relate-memory');
   const [query, setQuery] = useState(initial), [params, setParams] = useState('{}');
   const [run, setRun] = useState<ScriptRun | null>(null), [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null), [running, setRunning] = useState(false);
   const [view, setView] = useState<'graph'|'table'|'json'>('graph');
   const [history, setHistory] = useState<string[]>([]), [truncated, setTruncated] = useState(false);
   const [timings, setTimings] = useState<unknown>(null);
-  const [styleRules,setStyleRules]=useState<GraphStyleRule[]>([]);
+  const [styleRules,setStyleRules]=useState<GraphStyleRule[]>(()=>loadGraphStyles());
   const generation = useRef(0);
   useEffect(() => {
-    const refresh = () => fetch('/api/sources').then(async r => { if (!r.ok) throw Error('Cannot load sources'); setSources(await r.json()); }).catch(e => {setError(e.message); reportConsoleError('Source inventory', e.message);});
+    const refresh = () => fetch('/api/sources').then(async r => { if (!r.ok) throw Error('Cannot load sources'); const inventory:Source[]=await r.json(); setSources(inventory.sort((a,b)=>sourceRank(a)-sourceRank(b)||a.name.localeCompare(b.name))); }).catch(e => {setError(e.message); reportConsoleError('Source inventory', e.message);});
     void refresh();
     const timer = window.setInterval(refresh, 5000);
     const feed = new EventSource('/api/events');
@@ -36,16 +41,25 @@ export function App() {
     feed.onerror = () => {setLive(false);reportConsoleError('Live topology', 'Collector connection interrupted; reconnecting.');};
     return () => { feed.close(); window.clearInterval(timer); };
   }, []);
+  useEffect(()=>{
+    const selected=sources.find(s=>s.id===source);
+    if(selected) {engine.source=source;engine.kind=selected.kind;}
+    else if(sources.length) changeSource(sources[0].id);
+  },[source,sources]);
   function changeSource(id: string) {
     generation.current++;
     engine.source = id; engine.kind = sources.find(s => s.id === id)?.kind ?? 'relate';
-    setSource(id); setStyleRules([]); setRun(null); setError(null); setElapsed(null); setRunning(false); setTimings(null); setTruncated(false);
+    setSource(id); setRun(null); setError(null); setElapsed(null); setRunning(false); setTimings(null); setTruncated(false);
+  }
+  function changeStyles(rules:GraphStyleRule[]) {
+    setStyleRules(rules);
+    saveGraphStyles(rules);
   }
   async function execute(text: string) {
     const current = ++generation.current;
     setRunning(true); setError(null); setQuery(text); setRun(null); setTruncated(false); setTimings(null);
     try {
-      const result = await engine.execute(text, params);
+      const result = await engine.execute(text, params, source);
       if (current !== generation.current) return;
       setRun({ last: result, stats: result.stats, statements: 1 }); setElapsed(result.elapsed_ms);
       setTruncated(result.truncated); setTimings(result.timings ?? null);
@@ -58,12 +72,12 @@ export function App() {
     <nav aria-label="Console views"><button aria-selected={tab === 'topology'} onClick={() => setTab('topology')}>01 <span>Live topology</span></button><button aria-selected={tab === 'playground'} onClick={() => setTab('playground')}>02 <span>Playground</span></button><span className="nav-note">MCP → Relate → Aura</span></nav>
     {tab === 'topology' ? <Topology snapshot={snapshot} /> : <main className="playground">
       <div className="section-heading"><div><div className="eyebrow">EXPLORE THE CAPTURE</div><h1>Query your context.</h1><p>Relate playground · persistent local graphs and enterprise Aura.</p></div>
-      <label>Source<select aria-label="Database source" value={source} onChange={e => changeSource(e.target.value)}>{sources.map(s => <option key={s.id} value={s.id}>{s.name} · {s.kind}</option>)}</select></label></div>
+      <label>Source<select aria-label="Database source" value={source} onChange={e => changeSource(e.target.value)}>{sources.map(s => <option key={s.id} value={s.id}>{sourceNames[sourceKey(s)] ?? s.name} • {s.kind}</option>)}</select></label></div>
       <div className="query-presets">{defaultQueries.map(preset => <button key={preset.name} onClick={() => setQuery(preset.query)}>{preset.name}</button>)}<span>Read only · one statement · 1,000 records maximum</span></div>
       <details className="parameters"><summary>Query parameters</summary><textarea aria-label="Query parameters JSON" value={params} onChange={e => setParams(e.target.value)} spellCheck={false}/></details>
       {error && !run && <div className="notice error" role="alert">{error}</div>}
       {truncated && <div className="notice">Result limited to 1,000 records. Add filters or a smaller LIMIT.</div>}
-      <div className="playground-layout"><PlaygroundSidebar key={source} source={source} ready={sources.some(s=>s.id===source)} onQuery={setQuery} onStyles={setStyleRules}/><div className="workspace"><QueryWorkspace query={query} onQueryChange={setQuery} onRun={execute} engineReady={sources.length > 0} running={running} tab={view} onTabChange={setView} run={run} error={null} elapsed={elapsed} paramsNote={null} history={history} styleRules={styleRules}/></div></div>
+      <div className="playground-layout"><PlaygroundSidebar styleRules={styleRules} key={source} source={source} ready={sources.some(s=>s.id===source)} onQuery={setQuery} onStyles={changeStyles}/><div className="workspace"><QueryWorkspace query={query} onQueryChange={setQuery} onRun={execute} engineReady={sources.length > 0} running={running} tab={view} onTabChange={setView} run={run} error={null} elapsed={elapsed} paramsNote={null} history={history} styleRules={styleRules}/></div></div>
       {timings !== null && <details className="parameters"><summary>Relate query timings (not model telemetry)</summary><pre>{JSON.stringify(timings, null, 2)}</pre></details>}
       <footer>Adapted from the <a href="https://github.com/relatedb/relate-web" target="_blank" rel="noreferrer">Relate web playground</a> · Apache 2.0</footer>
     </main>}

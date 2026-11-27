@@ -7,9 +7,13 @@ export const schemaQueries = {
 };
 export const identifier = (name: string) => '`' + name.replaceAll('`','``') + '`';
 export const defaultQueries = [
-  {name:'All context',query:'MATCH (n) RETURN n LIMIT 100'},
+  {name:'All context',query:'MATCH p = (n)-[* 1..5]-() RETURN p LIMIT 100'},
   {name:'See messages',query:'MATCH p = (n)-[:NEXT *1..]-() RETURN p LIMIT 250'},
   {name:'Get Cyphers',query:'MATCH p = (n:ContextMessage)-[]-() WHERE n.cypher IS NOT NULL RETURN p LIMIT 250'},
-  {name:'Captured Cypher',query:'MATCH (q:ContextQuery) RETURN q.cypher, q.parameters, q.timestamp LIMIT 50'},
+  {name:'See Cowork',query:`MATCH p = (h:CaptureHost)--(a1:CaptureConnection)-[:IN_PROJECT]-(cp:ContextProject)-[:IN_PROJECT]-(a2:CaptureConnection)--(h)
+WHERE a1.agent = "codex" AND a2.agent = "claude-code"
+MATCH p1 = (cp)-[:HAS_SESSION]-(s:ContextSession) WHERE NOT s.source = "claude-desktop"
+MATCH p2 = (s)-[:HAS_MESSAGE]->(m0:ContextMessage)-[:NEXT *1..15]->(m:ContextMessage) WHERE NOT (m0)<-[:NEXT]-()
+RETURN p,p1,p2 LIMIT 250`},
   {name:'Capture graph',query:'MATCH p=(:CaptureConnection)-[:HAS_EVENT]->(:CaptureEvent) RETURN p LIMIT 50'},
 ];

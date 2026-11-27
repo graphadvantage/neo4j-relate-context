@@ -1,3 +1,4 @@
+import { calculateDefaultNodeColors, mostReadable } from '@neo4j-devtools/word-color';
 import { useEffect, useState } from 'react';
 import type { GraphStyleRule } from '@neo4j-ndl/react-graph';
 import { engine } from '../vendor/relate-web/lib/engine';
@@ -6,10 +7,9 @@ import { reportConsoleError } from './diagnostics';
 
 type Schema = {nodes: number; relationships: number; labels: string[]; types: string[]; properties: string[]};
 type Appearance = {color: string; size: number; caption: string};
-export function PlaygroundSidebar({source,ready,onQuery,onStyles}: {source:string;ready:boolean;onQuery:(query:string)=>void;onStyles:(rules:GraphStyleRule[])=>void}) {
+export function PlaygroundSidebar({source,ready,onQuery,onStyles,styleRules}: {source:string;ready:boolean;styleRules:GraphStyleRule[];onQuery:(query:string)=>void;onStyles:(rules:GraphStyleRule[])=>void}) {
   const [schema,setSchema]=useState<Schema|null>(null), [error,setError]=useState(''), [loading,setLoading]=useState(false);
   const [refresh,setRefresh]=useState(0), [target,setTarget]=useState('nodes');
-  const [styles,setStyles]=useState<Record<string,Appearance>>({});
   useEffect(()=>{
     if(!ready) return;
     let canceled=false;
@@ -23,23 +23,51 @@ export function PlaygroundSidebar({source,ready,onQuery,onStyles}: {source:strin
       .finally(()=>{if(!canceled) setLoading(false);});
     return ()=>{canceled=true;};
   },[source,ready,refresh]);
-  function update(change:Partial<Appearance>) {
-    const next={...styles,[target]:{...appearance,...change}};
-    setStyles(next);
-    onStyles(Object.entries(next).sort(([a],[b])=>Number(a.includes(':'))-Number(b.includes(':'))).map(([key,value])=>({
-      match:key==='nodes'?{label:null}:key==='relationships'?{reltype:null}:key.startsWith('label:')?{label:key.slice(6)}:{reltype:key.slice(5)},
-      apply:{color:{value:value.color},...(key==='relationships'||key.startsWith('type:')?{width:{value:value.size}}:{size:{value:value.size}}),
-        ...(value.caption==='auto'?{}:{captions:value.caption==='none'?{isDisabled:true}:{text:[{value:value.caption==='type'?{useType:true}:{property:value.caption}}]}})},
-    })));
-  }
   const isRelationship=target==='relationships'||target.startsWith('type:');
-  const appearance=styles[target] ?? {color:isRelationship?'#8da3b1':'#64b5db',size:isRelationship?2:25,caption:'auto'};
+  const match:GraphStyleRule['match']=target==='nodes'?{label:null}:target==='relationships'?{reltype:null}:target.startsWith('label:')?{label:target.slice(6)}:{reltype:target.slice(5)};
+  const sameTarget=(rule:GraphStyleRule)=>JSON.stringify(rule.match)===JSON.stringify(match);
+  function update(change:Partial<Appearance>) {
+    const apply={...styleRules.find(sameTarget)?.apply};
+    if(change.color!==undefined) apply.color={value:change.color};
+    if(change.size!==undefined) {
+      if(isRelationship) apply.width={value:change.size};
+      else apply.size={value:change.size};
+    }
+    if(change.caption!==undefined) {
+      if(change.caption==='auto') delete apply.captions;
+      else apply.captions=change.caption==='none'?{isDisabled:true}:{text:[{value:change.caption==='type'?{useType:true}:{property:change.caption}}]};
+    }
+    const next=[...styleRules.filter(rule=>!sameTarget(rule)),{match,apply}];
+    // Global rules precede label/type overrides.
+    next.sort((a,b)=>Number(('label' in a.match?a.match.label:'reltype' in a.match?a.match.reltype:null)!==null)-Number(('label' in b.match?b.match.label:'reltype' in b.match?b.match.reltype:null)!==null));
+    onStyles(next);
+  }
+  const appearance:Appearance={color:isRelationship?'#8da3b1':target.startsWith('label:')?calculateDefaultNodeColors(target.slice(6)).backgroundColor:'#64b5db',size:isRelationship?2:25,caption:'auto'};
+  for(const rule of styleRules) {
+    const global=isRelationship?'reltype' in rule.match && rule.match.reltype===null:'label' in rule.match && rule.match.label===null;
+    if(!global && !sameTarget(rule)) continue;
+    if(rule.apply.color && !rule.apply.color.isDisabled) appearance.color=rule.apply.color.value;
+    const size=isRelationship?rule.apply.width:rule.apply.size;
+    if(size && !size.isDisabled) appearance.size=size.value;
+    const caption=rule.apply.captions;
+    if(caption) {
+      const value=caption.text?.[0]?.value;
+      appearance.caption=caption.isDisabled?'none':typeof value==='object' && 'property' in value?value.property:typeof value==='object' && 'useType' in value?'type':'auto';
+    }
+  }
+  function labelColor(label:string) {
+    let color=calculateDefaultNodeColors(label).backgroundColor;
+    for(const rule of styleRules) {
+      if('label' in rule.match && (rule.match.label===null || rule.match.label===label) && rule.apply.color && !rule.apply.color.isDisabled) color=rule.apply.color.value;
+    }
+    return {backgroundColor:color,borderColor:color,color:mostReadable(color,['#0d141b','#ffffff'])};
+  }
   return <aside className="playground-sidebar" aria-label="Database schema and graph styling">
     <div className="panel-heading"><h2>Database schema</h2><button onClick={()=>setRefresh(n=>n+1)} disabled={loading}>Refresh</button></div>
     {loading && <p role="status">Loading schema…</p>}
     {error && <p role="alert" className="schema-error">{error}</p>}
     {schema && <>
-      <section><h3>Node labels <span>({schema.nodes.toLocaleString()} nodes)</span></h3><div className="schema-items">{schema.labels.map(label=><button key={label} onClick={()=>onQuery(`MATCH (n:${identifier(label)}) RETURN n LIMIT 250`)}>{label}</button>)}{!schema.labels.length && <span>No labels</span>}</div></section>
+      <section><h3>Node labels <span>({schema.nodes.toLocaleString()} nodes)</span></h3><div className="schema-items">{schema.labels.map(label=><button className="schema-label-pill" style={labelColor(label)} key={label} onClick={()=>onQuery(`MATCH (n:${identifier(label)}) RETURN n LIMIT 250`)}>{label}</button>)}{!schema.labels.length && <span>No labels</span>}</div></section>
       <section><h3>Relationships <span>({schema.relationships.toLocaleString()})</span></h3><div className="schema-items">{schema.types.map(type=><button key={type} onClick={()=>onQuery(`MATCH p=()-[:${identifier(type)}]->() RETURN p LIMIT 250`)}>{type}</button>)}{!schema.types.length && <span>No relationships</span>}</div></section>
       <section><h3>Properties</h3><div className="schema-items">{schema.properties.map(key=><button key={key} onClick={()=>onQuery(`MATCH (n) WHERE n.${identifier(key)} IS NOT NULL RETURN n LIMIT 250`)}>{key}</button>)}{!schema.properties.length && <span>No properties</span>}</div></section>
     </>}
@@ -48,7 +76,7 @@ export function PlaygroundSidebar({source,ready,onQuery,onStyles}: {source:strin
       <label>Color<input aria-label="Graph color" type="color" value={appearance.color} onInput={e=>update({color:e.currentTarget.value})} onChange={e=>update({color:e.target.value})}/></label>
       <label>{isRelationship?'Line width':'Node size'} · {appearance.size}<input aria-label={isRelationship?'Relationship width':'Node size'} type="range" min={isRelationship?1:10} max={isRelationship?10:60} value={appearance.size} onChange={e=>update({size:Number(e.target.value)})}/></label>
       <label>Caption<select aria-label="Graph caption" value={appearance.caption} onChange={e=>update({caption:e.target.value})}><option value="auto">Automatic</option><option value="none">Hidden</option><option value="type">Label / type</option>{schema?.properties.filter(p=>!['auto','none','type'].includes(p)).map(p=><option key={p} value={p}>{p}</option>)}</select></label>
-      <button onClick={()=>{setStyles({});onStyles([]);}}>Reset styling</button>
+      <button onClick={()=>onStyles([])}>Reset styling</button>
     </section>
   </aside>;
 }

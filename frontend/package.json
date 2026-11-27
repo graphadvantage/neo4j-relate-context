@@ -25,7 +25,8 @@
     "react": "^19",
     "react-dom": "^19",
     "elkjs": "^0.11.0",
-    "@tanstack/react-table": "^8.21.3"
+    "@tanstack/react-table": "^8.21.3",
+    "@neo4j-devtools/word-color": "0.0.8"
   },
   "devDependencies": {
     "@types/react": "^19",
