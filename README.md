@@ -34,7 +34,7 @@ flowchart TB
     subgraph Shared["Console — shared recall and topology/playground UI"]
         Recall["Recall API"]
         Chat["Chat: project + domain MCP scope<br/>Vector / full-text intent and Cypher retrieval"]
-        Code["Code: repository scope across agents<br/>Lexical relevance + recency"]
+        Code["Code: repository scope across agents<br/>Full-text relevance + recency"]
         Recall --> Chat
         Recall --> Code
     end
@@ -277,7 +277,7 @@ Codex and Claude Code capture repository work into separate local databases,
 `codex.rl` and `claude-code.rl`, then replicate to the same enterprise Aura
 graph. Shared recall is scoped to the repository's `Code` projects and sessions,
 with optional filtering by authoring agent. It retrieves recorded turns,
-decisions and session evidence using lexical relevance and recency, without
+decisions and session evidence using full-text relevance and recency, without
 requiring a domain MCP identifier, saved Cypher or embeddings.
 
 <img src="assets/codex-and-claude-code-cowork-recall.png" alt="Codex and Claude Code sharing repository context through separate local databases and enterprise Aura, with recall paths back to both agents" width="800">
@@ -304,7 +304,12 @@ with author/session/turn provenance. Use `get_evidence` with `turn_id` or
 with `before_position`. Existing captured Code sessions work immediately; no
 re-embedding or summary migration is needed.
 
-Coding retrieval uses lexical relevance and recency, not semantic vectors.
+Coding retrieval uses an Aura full-text index and recency, without semantic
+vectors. The console incrementally indexes existing and new recorded turns;
+responses report `fulltext_recency` when the index is ready, or
+`lexical_recency` for a scoped substring fallback while it builds or is
+unavailable. Index failures are reported as degraded, and pending local evidence
+uses the read-only fallback. Index maintenance does not require an OpenAI key.
 Recalled statements still require checking against live Git. Empty topic matches
 do not mean no sessions exist; inspect `sessions`, response state and
 `pending_local`. Chatbot intent/Cypher recall retains its separate MCP-scoped

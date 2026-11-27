@@ -1,7 +1,7 @@
 """Repository-scoped recall of recorded coding work across agents.
 
-Uses lexical relevance and recency over existing evidence; no provider calls,
-new summaries, or requirement for structured memories or saved Cypher.
+Uses indexed lexical relevance and recency over existing evidence, with an
+explicit substring fallback; no embeddings or requirement for saved Cypher.
 """
 import re
 import uuid
@@ -22,13 +22,7 @@ RETURN s.id AS id,s.session_id AS session,s.source AS agent,latest.git_commit AS
        coalesce(latest.git_source,'unavailable') AS git_source,
        last_seen,messages ORDER BY last_seen DESC,s.id LIMIT $limit
 '''
-TURNS = BASE + '''
-MATCH(s)-[:HAS_TURN]->(t:ContextTurn)-[:HAS_MESSAGE]->(u:ContextMessage {kind:'prompt'})
-MATCH(t)-[:HAS_MESSAGE]->(a:ContextMessage {kind:'final_response'})
-OPTIONAL MATCH(t)-[:HAS_REASONING]->(r:ContextReasoning)
-WITH s,t,u,a,r,toLower(u.body+' '+a.body+' '+coalesce(r.summary,'')) AS text
-WITH s,t,u,a,r,reduce(score=0,word IN $words | score+CASE WHEN text CONTAINS word THEN 1 ELSE 0 END) AS relevance
-WHERE size($words)=0 OR relevance>0
+TURN_RETURN = '''
 RETURN t.id AS turn_id,s.id AS session_key,s.session_id AS session,s.source AS agent,
        u.id AS prompt_id,substring(u.body,0,1600) AS prompt,
        a.id AS response_id,substring(a.body,0,4000) AS response,
@@ -37,6 +31,24 @@ RETURN t.id AS turn_id,s.id AS session_key,s.session_id AS session,s.source AS a
        size(u.body)>1600 OR size(a.body)>4000 AS evidence_truncated
 ORDER BY relevance DESC,timestamp DESC,turn_id LIMIT $limit
 '''
+TURNS = BASE + '''
+MATCH(s)-[:HAS_TURN]->(t:ContextTurn)-[:HAS_MESSAGE]->(u:ContextMessage {kind:'prompt'})
+MATCH(t)-[:HAS_MESSAGE]->(a:ContextMessage {kind:'final_response'})
+OPTIONAL MATCH(t)-[:HAS_REASONING]->(r:ContextReasoning)
+WITH s,t,u,a,r,toLower(u.body+' '+a.body+' '+coalesce(r.summary,'')) AS text
+WITH s,t,u,a,r,reduce(score=0,word IN $words | score+CASE WHEN text CONTAINS word THEN 1 ELSE 0 END) AS relevance
+WHERE size($words)=0 OR relevance>0
+''' + TURN_RETURN
+# Procedure form supports Neo4j 5 and Cypher 25. The limit must follow the
+# repository and author filters, so other projects cannot crowd out this one.
+FULLTEXT_TURNS = '''CALL db.index.fulltext.queryNodes('context_code_turns_text', $lucene)
+YIELD node AS t, score AS relevance
+MATCH (p:ContextProject:Code {name:$project})-[:HAS_SESSION]->(s:ContextSession:Code)-[:HAS_TURN]->(t)
+WHERE ($source_agent IS NULL OR s.source=$source_agent)
+MATCH(t)-[:HAS_MESSAGE]->(u:ContextMessage {kind:'prompt'})
+MATCH(t)-[:HAS_MESSAGE]->(a:ContextMessage {kind:'final_response'})
+OPTIONAL MATCH(t)-[:HAS_REASONING]->(r:ContextReasoning)
+''' + TURN_RETURN
 MEMORIES = BASE + '''
 MATCH(s)-[:HAS_MEMORY]->(f:ContextMemory)
 OPTIONAL MATCH(f)-[:SUPPORTED_BY]->(m:ContextMessage)
@@ -93,8 +105,8 @@ def coding_scope(body):
 
 
 class CodingRecall:
-    def __init__(self, run, sources=None):
-        self.run,self.sources=run,sources
+    def __init__(self, run, sources=None, search=None):
+        self.run,self.sources,self.search=run,sources,search
 
     def request(self, operation, body):
         scoped=coding_scope(body)
@@ -124,12 +136,30 @@ class CodingRecall:
         result={'receipt_id':str(uuid.uuid4()),'scope':{**scoped,'context_kind':'Code'},
                 'origin':'aura','state':'ready','retrieval_mode':'lexical_recency',
                 'validation':'recorded_evidence_unverified_against_current_git','errors':[]}
+        if operation=='recall' and query.strip() and self.search:
+            from .coding_search import search_query
+            lucene=search_query(query)
+            if lucene and self.search.available():
+                queries=[(key,FULLTEXT_TURNS,{**params,'lucene':lucene}) if key=='matches'
+                         else (key,statement,parameters) for key,statement,parameters in queries]
+                result['retrieval_mode']='fulltext_recency'
+            result['search_index']=dict(self.search.status)
+            if result['search_index']['state']=='unavailable':
+                result['state']='degraded'
+                result['errors'].append({'source':'search_index','error':result['search_index'].get('error','Unavailable')})
         for key,statement,parameters in queries:
             try:result[key]=self.run(statement,**parameters)
             except Exception as exc:
                 result[key]=[]
                 result['state']='degraded'
                 result['errors'].append({'source':'aura','error':type(exc).__name__})
+                if statement==FULLTEXT_TURNS:
+                    result['retrieval_mode']='lexical_recency'
+                    result['search_index']={'state':'unavailable','error':type(exc).__name__}
+                    self.search.invalidate(type(exc).__name__)
+                    try:result[key]=self.run(TURNS,**params,words=words)
+                    except Exception as fallback:
+                        result['errors'].append({'source':'aura_fallback','error':type(fallback).__name__})
         # Keep pending local work separate and labeled; never call it replicated.
         pending={key:[] for key,_,_ in queries}
         if self.sources:
@@ -137,6 +167,8 @@ class CodingRecall:
                 if source['kind']!='relate' or source['id']=='capture':continue
                 for key,statement,parameters in queries:
                     try:
+                        if statement==FULLTEXT_TURNS:
+                            statement,parameters=TURNS,{**params,'words':words}
                         rows=self.sources.query(source['id'],statement,parameters)['rows']
                         for row in rows:
                             identity=row.get('turn_id') or row.get('message_id') or row.get('id')

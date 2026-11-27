@@ -496,8 +496,8 @@ records and skips unclassified sessions in mixed projects. It does not rename
 or split legacy projects that already share the same name.
 
 These labels establish the recall classification boundary. Shared coding recall
-reads Code projects/sessions by repository across agents; it uses lexical relevance
-and recency. Automatic handoff generation and semantic coding embeddings remain
+reads Code projects/sessions by repository across agents; it uses indexed full-text
+relevance and recency with an explicit lexical fallback. Automatic handoff generation and semantic coding embeddings remain
 separate work.
 
 
@@ -534,9 +534,33 @@ credentials but do not require an OpenAI key or make embedding requests.
 `get_session(context_kind="Code", session=<session id>)` reads a shared session;
 `before_position` pages backward. `get_evidence(context_kind="Code", turn_id=...)`
 expands an individual turn. Both enforce repository and Code-session scope.
-Responses use lexical relevance/recency, carry unverified evidence provenance,
+Responses report their full-text or fallback retrieval mode, carry unverified evidence provenance,
 and explicitly distinguish failed retrieval, no topic match, existing sessions
 and pending local records. No historical decision or commit is invented.
+
+#### Coding full-text indexing
+
+The console builds `context_code_turns_text` on `ContextTurn.search_text`, derived
+from the original prompt, final response and recorded reasoning summary. Old
+turns require no embeddings or generated summaries. Each background pass indexes
+up to 200 complete turns and runs independently of chatbot intent promotion and
+the OpenAI key. Progress is persisted in the derived properties, so restarting
+continues from missing turns. Indexing runs at startup and on a roughly 30-second
+maintenance cycle; newly replicated records may await that cycle.
+
+Ranked recall uses `db.index.fulltext.queryNodes`, retained for Neo4j 5/Cypher 25
+compatibility; see the [Neo4j full-text index documentation](https://neo4j.com/docs/cypher-manual/current/indexes/search-indexes/full-text-indexes/).
+Query terms are quoted, and canonical repository plus optional author membership
+are filtered before the result limit, so other projects cannot crowd out the
+requested scope. Scores order relevance first and timestamp/turn ID break ties.
+Query-free recall still returns recent recorded history.
+
+`retrieval_mode` is `fulltext_recency` when the index is ready, otherwise
+`lexical_recency`. `search_index` reports `ready`, `building` or `unavailable`.
+Missing privileges or index failures produce a disclosed, scoped fallback;
+unavailability is degraded rather than a false empty result. Local pending
+records always use read-only substring retrieval, never index writes. This
+index is a derived Aura projection, separate from source-evidence replication.
 
 ### Repository identity and legacy history
 

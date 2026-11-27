@@ -120,6 +120,8 @@ class IntentRecall:
         self.ready = False
         self.status = {'state':'pending','model':MODEL,'dimensions':DIMENSIONS}
         self.intent_stats = {'state':'pending','groups':[]}
+        from .coding_search import CodingSearch
+        self.coding_search = CodingSearch(lambda query, **params: self.run(query, **params))
 
     def refresh_intent_statistics(self):
         if not self.enabled():
@@ -248,7 +250,7 @@ class IntentRecall:
     def request(self, operation, body):
         if body.get('context_kind')=='Code':
             from .coding_recall import CodingRecall
-            return CodingRecall(self.run,self.sources).request(operation,body)
+            return CodingRecall(self.run,self.sources,self.coding_search).request(operation,body)
         scoped = scope(body.get('project'),body.get('mcp_source_id'))
         limit = body.get('limit',5)
         if type(limit) is not int or not 1<=limit<=20:

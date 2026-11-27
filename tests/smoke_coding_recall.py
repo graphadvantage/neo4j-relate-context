@@ -1,6 +1,7 @@
-"""Read-only Aura acceptance test; no embeddings or synthetic conversation writes.
+"""Aura acceptance test; may build the derived Code full-text index.
 
-Run in the console with an existing populated Code project as argv[1].
+No embeddings or synthetic conversation writes. Run in the console with an
+existing populated canonical Code project as argv[1].
 """
 import json
 import sys
