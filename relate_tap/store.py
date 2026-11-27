@@ -18,7 +18,8 @@ ON CREATE SET h.name = $input.host
 MERGE (c:CaptureConnection {id: $input.connection})
 ON CREATE SET c.server = $input.server, c.agent = $input.agent,
               c.project = $input.project, c.username = $input.username
-SET c.agent = coalesce($input.agent, c.agent), c.database = coalesce($input.database, c.database)
+SET c.agent = coalesce($input.agent, c.agent), c.database = coalesce($input.database, c.database),
+    c.context_kind = coalesce($input.context_kind, c.context_kind)
 MERGE (h)-[:HAS_CONNECTION]->(c)
 MERGE (e:CaptureEvent {id: $input.id})
 ON CREATE SET e.kind = $input.kind, e.timestamp = $input.timestamp,
@@ -27,6 +28,8 @@ MERGE (c)-[:HAS_EVENT]->(e)
 CALL (c) {
     WITH c WHERE $input.project IS NOT NULL
     MERGE (project:ContextProject {name: $input.project})
+    FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET project:Code)
+    FOREACH (_ IN CASE WHEN $input.context_kind = 'Chat' THEN [1] ELSE [] END | SET project:Chat)
     MERGE (c)-[:IN_PROJECT]->(project)
     RETURN count(*) AS projects
 }
@@ -85,8 +88,10 @@ class CaptureStore:
         required = ("id", "kind", "timestamp", "connection", "server", "host", "username")
         if not all(isinstance(event.get(k), str) for k in required):
             raise ValueError("Invalid capture event")
+        if event.get("context_kind") not in (None, "Chat", "Code"):
+            raise ValueError("context_kind must be Chat or Code")
         params = {k: event.get(k) for k in (
-            *required, "agent", "project", "call_id", "tool", "cypher", "query_sha256", "redacted", "database")}
+            *required, "agent", "project", "call_id", "tool", "cypher", "query_sha256", "redacted", "database", "context_kind")}
         params.update(host_id=hashlib.sha256(event["host"].encode()).hexdigest(),
                       tool_id=hashlib.sha256(json.dumps([event["server"], event.get("tool")]).encode()).hexdigest(),
                       parameters=json.dumps(event.get("parameters")), payload=json.dumps(event))
@@ -126,7 +131,8 @@ class CaptureStore:
                             if self.route_writer == 'native' and route.get('database_path') and route['database_path'] != str(self.database):
                                 break
                             event = {**event, 'agent': self.route_agent, 'database': self.database.name,
-                                     'client_info': route.get('client_info'), 'attribution': route.get('identity_source')}
+                                     'client_info': route.get('client_info'), 'attribution': route.get('identity_source'),
+                                     'context_kind': event.get('context_kind') or route.get('context_kind')}
                         self.persist(event)
                         next_offsets = {**self.offsets, path.name: source.tell()}
                         temporary = self.state.with_suffix(".tmp")

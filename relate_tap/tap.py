@@ -17,7 +17,7 @@ import uuid
 
 from .privacy import sanitize
 from .bootstrap import (atomic_json, canonical_agent, client_identity, database_for,
-                        discover_agent, discover_project, install_skill, start_worker)
+                        discover_agent, discover_project, install_skill, start_worker, context_kind)
 
 
 def now():
@@ -73,7 +73,7 @@ def response_details(message):
 
 
 class Recorder:
-    def __init__(self, directory, name, agent=None, project=None):
+    def __init__(self, directory, name, agent=None, project=None, kind=None):
         directory.mkdir(parents=True, exist_ok=True)
         self.connection = str(uuid.uuid4())
         self.path = directory / f"{self.connection}.jsonl"
@@ -82,6 +82,8 @@ class Recorder:
         self.pending = {}
         self.name, self.agent, self.project = name, agent, project
         self.agent = canonical_agent(agent)
+        self.context_kind_override = kind
+        self.context_kind = None
         self.override = self.agent
         self.client_info = None
         self.route = None
@@ -99,12 +101,14 @@ class Recorder:
             self.route['client_info'] = self.client_info
             self.heartbeat()
             return
+        self.context_kind = context_kind(self.project,self.agent,self.context_kind_override) if self.agent else None
         try:
             skill = install_skill(self.agent) if self.agent else {'state': 'pending'}
         except OSError as exc:
             skill = {'state': 'error', 'error': type(exc).__name__}
         self.route = {'connection': self.connection, 'server': self.name, 'agent': self.agent,
                       'host': socket.gethostname(), 'username': os_username(), 'project': self.project,
+                      'context_kind': self.context_kind,
                       'client_info': self.client_info, 'identity_source': 'configured' if self.override else 'mcp_client',
                       'database': database_for(self.agent).name if self.agent else None,
                       'database_path': str(database_for(self.agent)) if self.agent else None,
@@ -143,6 +147,7 @@ class Recorder:
                  "connection": self.connection, "server": self.name,
                  "host": socket.gethostname(), "username": os_username(),
                  "agent": self.agent, "project": self.project,
+                 "context_kind": self.context_kind,
                  "attribution": ('configured' if self.override else 'mcp_client') if self.agent else "unknown",
                  "client_info": self.client_info,
                  "database": self.route['database'] if self.route else None, **fields}
@@ -221,6 +226,7 @@ def main():
     parser.add_argument("--spool", type=Path, default=Path(os.environ.get("RELATE_TAP_SPOOL", str(Path.home()/'.relate-tap/spool'))))
     parser.add_argument("--agent", default=os.environ.get("RELATE_TAP_AGENT"))
     parser.add_argument("--project", default=os.environ.get("RELATE_TAP_PROJECT"))
+    parser.add_argument("--context-kind", choices=["Chat", "Code"], help="Explicit project classification when automatic discovery is unavailable")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -228,7 +234,7 @@ def main():
         parser.error("Expected -- followed by the MCP server command")
     recorder = None
     try:
-        recorder = Recorder(args.spool, args.name, args.agent, args.project or discover_project())
+        recorder = Recorder(args.spool, args.name, args.agent, args.project or discover_project(), args.context_kind)
         recorder.emit("connected")
     except OSError as exc:
         print(f"relate-tap: capture unavailable ({type(exc).__name__}); forwarding continues", file=sys.stderr)

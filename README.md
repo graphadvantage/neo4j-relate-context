@@ -130,6 +130,70 @@ its route with the console. Claude Desktop uses its memory MCP connector.
 The topology separates current connections from capture history and shows
 the per-agent database followed by the enterprise Aura destination.
 
+## Claude Code across repositories
+
+Register the memory MCP once at **user scope**, using the installed executable
+path described above:
+
+```sh
+claude mcp add --scope user relate-memory-mcp -- \
+  /usr/local/bin/relate-tap --name relate-memory-mcp -- \
+  /usr/local/bin/relate-tap memory-server --agent claude-code
+```
+
+This makes the connection available across repositories without adding an MCP
+entry to each repository. Do not supply a fixed `--project`. Start Claude Code
+from the repository you want to work in:
+
+```sh
+cd ~/GitHub/your-repo
+claude
+```
+
+The tap and memory server discover the project from the Git-origin repository
+name, so renamed checkouts and worktrees retain the same project attribution.
+All Claude Code repositories write to `~/.relate-tap/databases/claude-code.rl`,
+organized under their respective `ContextProject` nodes. Git-attributed projects
+and sessions receive the secondary `Code` label. The native worker pushes this
+database to the configured enterprise Aura instance.
+
+Automatic conversation capture also requires memory instructions. On this Mac,
+these are enabled in `~/.claude/CLAUDE.md`: recall at session start, call
+`record_turn` after each completed exchange, retain one session ID per chat,
+and report capture failures. The `relate-tap-memory` skill supplies the capture
+workflow. MCP registration alone does not record every chat turn or local coding
+tool call; the tap records calls passing through it, and `record_turn` supplies
+conversation context and observed coding evidence.
+
+Restart an existing Claude Code session after changing MCP configuration or user
+instructions. Run `/mcp` and confirm `relate-memory-mcp` is connected. If a route
+is missing or attributed to another repository, check for a project/local entry
+with the same server name overriding the user registration, or a fixed
+`--project` argument. Capture failures should be reported; a queued flush is
+not confirmation of delivery to Aura.
+
+Coding recall is shared across agents through Aura. For example:
+
+```json
+{"context_kind": "Code", "query": "significant design decisions", "source_agent": "codex"}
+```
+
+Pass this to `recall_context`; omit `project` to accept the Git-origin default.
+Omit `source_agent` to recall all agents' work. Claude Code and Codex default to
+Code recall even without a query. No domain MCP name or saved Cypher is required.
+Results include recent sessions, matching recorded turns and structured memories,
+with author/session/turn provenance. Use `get_evidence` with `turn_id` or
+`get_session` with the returned `session_key`/session `id`, both with
+`context_kind: "Code"`, to expand evidence. Session reads support backward paging
+with `before_position`. Existing captured Code sessions work immediately; no
+re-embedding or summary migration is needed.
+
+Coding retrieval uses lexical relevance and recency, not semantic vectors.
+Recalled statements still require checking against live Git. Empty topic matches
+do not mean no sessions exist; inspect `sessions`, response state and
+`pending_local`. Chatbot intent/Cypher recall retains its separate MCP-scoped
+vector/full-text path.
+
 ## Aura embedding smoke test
 
 Set `OPENAI_API_KEY` alongside the `AURA_*` connection values in the ignored
@@ -148,3 +212,10 @@ procedure result.
 It verifies the committed property types and dimensions and prints metadata only.
 The test makes a paid OpenAI request and is excluded from automatic unit tests.
 It does not process existing chat messages or create retrieval indexes.
+
+
+Captured projects and sessions carry secondary `Chat` or `Code` labels:
+chatbot/MCP project context is `Chat`, and Git-attributed repository work is
+`Code`. Classification is independent of which coding agent captured it.
+See [Chat and Code classification](docs/relate-tap.md#chat-and-code-classification)
+for automatic discovery, explicit attribution, and existing-data labeling.

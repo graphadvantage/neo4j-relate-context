@@ -368,7 +368,7 @@ eligible Desktop user questions with Cypher explicitly recorded in the same
 `tool_calls[].mcp_source_id` supply stable connection names across restarts.
 Unqualified ambiguous tools, missing Cypher, and very short acknowledgements are
 skipped. No timestamps are used to infer causality. This is an initial Desktop
-intent/query slice; coding handoff/decision extraction is not implemented here.
+intent/query slice. Shared coding recall separately reads recorded Code turns and decisions; automatic coding handoff/decision extraction is not implemented.
 
 Intents deduplicate by project, MCP name and normalized question; original user
 messages link via `EXPRESSES`, and recorded query executions via `RESOLVED_BY`.
@@ -385,7 +385,7 @@ Shared MCP tools:
 - `get_evidence(project, mcp_source_id, intent_id, limit?, max_chars?)`
 
 `project` can be omitted when the coding server has discovered its Git project.
-Shared retrieval always requires a domain MCP source; query-free `recall_context`
+Shared Chat intent retrieval requires a domain MCP source; Chat query-free `recall_context`
 keeps its legacy local-only behavior. Recall mode defaults to `hybrid`: exact
 scoped cosine (ENN) plus scoped lexical search, combined with reciprocal rank
 fusion. `ann` uses filtered vector-index search; `enn` uses exact cosine alone.
@@ -469,3 +469,68 @@ substantive domain-data question, not just once per session. Applicable full
 queries should be reused; omitted query text must be fetched before reuse.
 A model can still choose to generate a query, so its reason and provenance
 should be reported honestly; this does not enforce or prove query reuse.
+
+
+### Chat and Code classification
+
+Projects and sessions retain their existing base labels and receive secondary
+`Chat` or `Code` labels. Repository work uses `:ContextProject:Code` and
+`:ContextSession:Code`; chatbot/MCP projects use `:ContextProject:Chat` and
+`:ContextSession:Chat`. A project can accumulate both labels across distinct
+sessions. Labels do not change existing IDs, uniqueness keys, or project names.
+
+The tap and memory writer discover `Code` when the project matches the Git-origin
+repository name of their working directory. Desktop defaults to `Chat` even if
+its process starts in a checkout. The tap accepts `--context-kind Chat|Code` and
+`record_turn` accepts `context_kind` for explicit attribution, including work in
+an external directory. Unknown attribution is left unclassified. Merely using
+MCP or a coding agent does not establish repository provenance.
+
+Labels are written locally and follow the existing snapshot push to Aura.
+Existing records can be labeled with `relate_tap.project_labels.backfill`, using
+an explicitly verified project inventory. This additive operation preserves
+records and skips unclassified sessions in mixed projects. It does not rename
+or split legacy projects that already share the same name.
+
+These labels establish the recall classification boundary. Shared coding recall
+reads Code projects/sessions by repository across agents; it uses lexical relevance
+and recency. Automatic handoff generation and semantic coding embeddings remain
+separate work.
+
+
+### Claude Code across repositories
+
+Register the memory MCP once at user scope:
+
+```sh
+claude mcp add --scope user relate-memory-mcp -- /usr/local/bin/relate-tap --name relate-memory-mcp -- /usr/local/bin/relate-tap memory-server --agent claude-code
+```
+
+Start Claude Code from each repository. Both tap and memory server discover its
+Git-origin repository name from the working directory. No per-repository MCP
+entry or fixed `--project` is needed. All Claude Code projects use the same
+`claude-code.rl`, with separate `ContextProject` attribution. A more specific
+project/local entry with the same server name can override the user entry;
+check `/mcp` when diagnosing a route. Restart an existing Claude Code session to
+load the changed configuration.
+
+Automatic exchange capture also requires the corresponding user/project memory
+instructions; configuring MCP alone records only calls actually made through it.
+
+
+### Shared coding recall
+
+`recall_context(context_kind="Code", query="design decisions")` searches existing
+Aura coding turns and returns author/session/turn IDs, prompt/response excerpts,
+reasoning summaries when recorded, recent sessions and structured memories.
+Code agents default to this mode even without a query. The Git project is the
+scope; no domain MCP identifier is required. `source_agent` optionally narrows
+authorship, while the default includes all agents. Code reads require Aura
+credentials but do not require an OpenAI key or make embedding requests.
+
+`get_session(context_kind="Code", session=<session id>)` reads a shared session;
+`before_position` pages backward. `get_evidence(context_kind="Code", turn_id=...)`
+expands an individual turn. Both enforce repository and Code-session scope.
+Responses use lexical relevance/recency, carry unverified evidence provenance,
+and explicitly distinguish failed retrieval, no topic match, existing sessions
+and pending local records. No historical decision or commit is invented.

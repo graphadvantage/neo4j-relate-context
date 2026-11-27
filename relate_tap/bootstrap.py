@@ -127,6 +127,26 @@ def start_worker(agent, spool):
                          stdout=log, stderr=log, close_fds=True, **options)
 
 
+def context_kind(project, agent=None, explicit=None, directory=None):
+    """Classify work from explicit provenance or a matching Git checkout."""
+    if explicit is not None:
+        if explicit not in ('Chat', 'Code'):
+            raise ValueError('context_kind must be Chat or Code')
+        return explicit
+    # Desktop projects are chat contexts even when launched inside a checkout.
+    if canonical_agent(agent) == 'claude-desktop':
+        return 'Chat'
+    directory = Path(directory or Path.cwd()).resolve()
+    try:
+        result = subprocess.run(['git', '-C', str(directory), 'rev-parse', '--git-dir'],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and project == discover_project(directory):
+            return 'Code'
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def discover_project(directory=None):
     """Prefer origin repository name; use the Git common directory as fallback."""
     directory = Path(directory or Path.cwd()).resolve()

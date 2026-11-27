@@ -149,7 +149,7 @@ def create_app(data=None, spool=None, config=None, frontend=None):
     async def memory_request(operation: str, body: dict):
         client=body.pop('_client',None)
         activity=None
-        tools={'recall':'recall_context','query':'get_query','evidence':'get_evidence'}
+        tools={'recall':'recall_context','query':'get_query','evidence':'get_evidence','session':'get_session'}
         if operation in tools and isinstance(client,dict) and all(
             isinstance(client.get(k),str) and 0<len(client[k])<=200 for k in ('agent','host')):
             activity={'id':str(uuid.uuid4()),'agent':client['agent'],'host':client['host'],

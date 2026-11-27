@@ -25,21 +25,27 @@ def tool(name, description, required, optional=None):
     }}
 
 
+CODE_OPTIONS = {
+    'context_kind': {'enum':['Chat','Code'],'description':'Code recalls repository work across all agents in Aura; Chat recalls MCP-scoped query intents.'},
+    'source_agent': {'type':'string','description':'Optional author filter, such as codex. Omit to search all agents.'},
+}
 RECALL_OPTIONS = {
-    'query': {'type':'string','maxLength':8000,'description':'Current user intent/task for shared semantic recall. Requires mcp_source_id.'},
+    **CODE_OPTIONS,
+    'query': {'type':'string','maxLength':8000,'description':'Task/question for shared recall. Code uses repository scope; Chat requires mcp_source_id.'},
     'mcp_source_id': {'type':'string','description':'Stable domain MCP server name (e.g. counterparty-risk), not a process/connection UUID.'},
     'mode': {'enum':['enn','ann','hybrid'],'default':'hybrid'},
     'max_chars': {'type':'integer','minimum':2000,'maximum':64000,'default':12000},
 }
 LIMIT = {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}
 TOOLS = [
-    tool("save_context", "Save an explicitly requested note in the named collection.", ["project", "title", "body"]),
-    tool("recall_context", "For each new domain question, recall scoped intents with complete stored Cypher and parameters. Fetch get_query when retrieval_required is true; never reconstruct omitted text. With no query, read legacy local notes/memories.", ["project"], {**LIMIT,**RECALL_OPTIONS}),
+    tool("save_context", "Save an explicitly requested note in the named collection.", ["project", "title", "body"], {"context_kind": {"enum": ["Chat", "Code"]}}),
+    tool("recall_context", "Recall repository coding work across agents with context_kind=Code, or scoped chatbot intents with full Cypher. Fetch get_query when retrieval_required is true; never reconstruct omitted text. Code is the default for coding agents, including query-free startup recall. Chat with no query reads legacy local notes/memories.", ["project"], {**LIMIT,**RECALL_OPTIONS}),
     tool('get_query','Retrieve exact Cypher and parameters for an intent-associated query within the specified MCP/project scope.', ['project','mcp_source_id','query_id'], {'max_chars':RECALL_OPTIONS['max_chars']}),
-    tool('get_evidence','Retrieve bounded original user questions supporting a recalled intent in the same MCP/project scope.', ['project','mcp_source_id','intent_id'], {**LIMIT,'max_chars':RECALL_OPTIONS['max_chars']}),
-    tool("get_session", "Read recent captured messages for a session.", ["project", "session"], LIMIT),
+    tool('get_evidence','Expand a Code turn using turn_id, or Chat intent using intent_id and mcp_source_id, within project scope.', ['project'], {**CODE_OPTIONS, **LIMIT,'mcp_source_id':{'type':'string'},'intent_id':{'type':'string'},'turn_id':{'type':'string'},'max_chars':RECALL_OPTIONS['max_chars']}),
+    tool("get_session", "Read a repository-scoped shared coding session from Aura, or legacy local Chat session messages.", ["project", "session"], {**LIMIT, **CODE_OPTIONS, "before_position":{"type":"integer","minimum":1},"max_chars":RECALL_OPTIONS["max_chars"]}),
     tool("record_turn", "Save a completed exchange in order, including observed tool calls and POLE+O entities.",
          ["project", "session", "turn", "prompt", "response"], {
+             "context_kind": {"enum": ["Chat", "Code"], "description": "Project/session work type: Code for repository work, Chat for chatbot/MCP projects. Auto-discovered when omitted."},
              "reasoning_summary": {"type": "string", "maxLength": 4000, "description": "Concise explanation grounded in the answer and observed evidence; never hidden chain-of-thought."},
              "model": {"type": "string", "description": "Observed model name; omit when unavailable."},
              "model_version": {"type": "string", "description": "Exact reported model version; never infer from the model name."},
@@ -79,6 +85,14 @@ when observed or measured for this turn. Never estimate missing telemetry or use
 Omit secrets and tool arguments you cannot verify. Extract grounded
 POLE+O entities (Person, Object, Location, Event, Organization) and concise facts or decisions,
 with evidence pointing to the prompt or response. Use recall_context for earlier memory.
+For coding work use recall_context(context_kind="Code", query=current_task) with the
+Git-origin project default. This retrieves recorded turns, decisions and sessions
+from Aura across agents. No mcp_source_id or saved Cypher is needed. Optionally
+set source_agent="codex" or "claude-code"; omit to recall both. get_session with
+context_kind="Code" expands a returned session_key; get_evidence with
+context_kind="Code" and turn_id expands a turn. Retrieval is lexical plus recency,
+not vector search. Empty retrieval does not prove no other session exists; inspect
+returned sessions. Report degraded state and pending local origin honestly.
 For EVERY new substantive domain-data question, call recall_context with the CURRENT
 question as query, project and the actual domain
 mcp_source_id (e.g. robot-twin). Search is strictly scoped to that MCP source and project;
@@ -101,6 +115,12 @@ def call(run, sync, name, args, agent="claude-desktop", project=None):
     if name == "flush_memory":
         return sync.flush() if sync else {"queued": False, "state": "disabled"}
     project = clean(args.get("project") or project, 160, "project")
+    coding = args.get('context_kind') == 'Code' or (
+        agent in ('codex','claude-code') and not args.get('mcp_source_id') and args.get('context_kind') != 'Chat')
+    if coding and name in ('recall_context','get_session','get_evidence'):
+        from relate_tap.recall_client import request
+        operation={'get_session':'session','get_evidence':'evidence','recall_context':'recall'}[name]
+        return request(operation,{**args,'context_kind':'Code'},project,agent=agent)
     if name in ('get_query','get_evidence') or (name=='recall_context' and 'query' in args):
         from relate_tap.recall_client import request
         operation={'get_query':'query','get_evidence':'evidence','recall_context':'recall'}[name]

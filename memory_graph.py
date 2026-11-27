@@ -57,6 +57,8 @@ LIMIT $input.limit
 
 SAVE = """
 MERGE (p:ContextProject {name: $input.project})
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET p:Code)
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Chat' THEN [1] ELSE [] END | SET p:Chat)
 MERGE (n:ContextNote {id: $input.id})
 ON CREATE SET n.source = $input.source, n.title = $input.title, n.body = $input.body,
               n.created_at = $input.created_at, n.git_commit = $input.git_commit,
@@ -214,7 +216,9 @@ CALL (s) {
     MERGE (f)-[:SUPPORTED_BY]->(m)
     RETURN count(*) AS facts
 }
-WITH s
+WITH p, s
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Code' THEN [1] ELSE [] END | SET p:Code, s:Code)
+FOREACH (_ IN CASE WHEN $input.context_kind = 'Chat' THEN [1] ELSE [] END | SET p:Chat, s:Chat)
 """ + LINK_MESSAGES
 
 ENTITY_TYPES = {"Person", "Object", "Location", "Event", "Organization"}
@@ -224,6 +228,8 @@ MEMORY_KINDS = {"fact", "decision", "open_item"}
 def exchange(project, source, args):
     if not isinstance(args, dict):
         raise ValueError("Expected a JSON exchange object")
+    from relate_tap.bootstrap import context_kind
+    work_kind = context_kind(project, source, args.get("context_kind"))
     session = clean(args.get("session"), 160, "session")
     turn = clean(args.get("turn"), 160, "turn")
     key = digest([project, source, session])
@@ -291,7 +297,7 @@ def exchange(project, source, args):
     fingerprint_parts = [messages, mentions, facts]
     if any(field in args for field in REASONING_FIELDS):
         fingerprint_parts.append(reasoning)
-    return {"project": project, "source": source, "session": session, "key": key,
+    return {"project": project, "source": source, "session": session, "key": key, "context_kind": work_kind,
             "username": pwd.getpwuid(os.getuid()).pw_name if pwd else __import__('getpass').getuser(),
             "turn_key": turn_key, "fingerprint": digest(fingerprint_parts), "reasoning": reasoning,
             "timestamp": datetime.now(timezone.utc).isoformat(), "messages": messages,
@@ -386,7 +392,9 @@ def save_note(run, project, source, note, git_commit=None):
         "body": clean(note.get("body"), 4000, "body"), "git_commit": git_commit,
     }
     note_id = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    payload.update(id=note_id, created_at=datetime.now(timezone.utc).isoformat())
+    from relate_tap.bootstrap import context_kind
+    payload.update(id=note_id, created_at=datetime.now(timezone.utc).isoformat(),
+                   context_kind=context_kind(project, source, note.get("context_kind")))
     run(SAVE, payload, read_only=False)
     rows = run(VERIFY, {"project": project, "id": note_id})
     if not rows:

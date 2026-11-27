@@ -126,8 +126,8 @@ class IntentRecall:
         return all(os.environ.get(name) for name in ('AURA_URI','AURA_USERNAME','AURA_PASSWORD','OPENAI_API_KEY'))
 
     def connect(self):
-        if not self.enabled():
-            raise ValueError('Intent recall requires AURA_* credentials and OPENAI_API_KEY in the console environment')
+        if not all(os.environ.get(name) for name in ('AURA_URI','AURA_USERNAME','AURA_PASSWORD')):
+            raise ValueError('Shared recall requires AURA_* credentials in the console environment')
         if self.driver is None:
             from neo4j import GraphDatabase
             self.driver = GraphDatabase.driver(os.environ['AURA_URI'],
@@ -220,6 +220,9 @@ class IntentRecall:
         return sorted(matches.values(),key=lambda row:-row['lexical_overlap'])[:limit],errors
 
     def request(self, operation, body):
+        if body.get('context_kind')=='Code':
+            from .coding_recall import CodingRecall
+            return CodingRecall(self.run,self.sources).request(operation,body)
         scoped = scope(body.get('project'),body.get('mcp_source_id'))
         limit = body.get('limit',5)
         if type(limit) is not int or not 1<=limit<=20:

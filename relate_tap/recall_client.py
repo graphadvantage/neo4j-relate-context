@@ -12,7 +12,11 @@ from .intent_model import scope
 
 
 def request(operation, arguments, project=None, agent=None):
-    scoped=scope(arguments.get('project') or project,arguments.get('mcp_source_id'))
+    if arguments.get('context_kind')=='Code':
+        from .coding_recall import coding_scope
+        scoped=coding_scope({**arguments,'project':arguments.get('project') or project})
+    else:
+        scoped=scope(arguments.get('project') or project,arguments.get('mcp_source_id'))
     body={**arguments,**scoped}
     body.pop('scope_key',None)
     if agent:

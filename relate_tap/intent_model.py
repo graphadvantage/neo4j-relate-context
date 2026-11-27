@@ -101,7 +101,7 @@ def bounded(result, max_chars):
             oversized.update(retrieval_required=True,omission_reason='response_budget')
             result['truncated']=True
             continue
-        key = next((key for key in ('matches', 'evidence', 'pending_local') if result.get(key)), None)
+        key = next((key for key in ('matches', 'evidence', 'messages', 'memories', 'notes', 'sessions', 'pending_local') if result.get(key)), None)
         if key:
             result[key].pop()
             result['truncated'] = True

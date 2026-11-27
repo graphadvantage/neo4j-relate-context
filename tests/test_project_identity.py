@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from relate_tap.bootstrap import discover_project
+from unittest.mock import patch
 import memory_mcp
 
 class ProjectIdentityTest(unittest.TestCase):
@@ -30,7 +31,10 @@ class ProjectIdentityTest(unittest.TestCase):
             return []
         result=memory_mcp.respond(run,None,{'method':'tools/list'},'claude-code','neo4j-semantic-robot')
         self.assertNotIn('project',result['tools'][0]['inputSchema']['required'])
-        memory_mcp.call(run,None,'recall_context',{},'claude-code','neo4j-semantic-robot')
-        self.assertEqual(calls[0]['project'],'neo4j-semantic-robot')
+        with patch('relate_tap.recall_client.request',return_value={'state':'ready'}) as request:
+            memory_mcp.call(run,None,'recall_context',{},'claude-code','neo4j-semantic-robot')
+        self.assertEqual(request.call_args.args[2],'neo4j-semantic-robot')
+        self.assertEqual(request.call_args.kwargs['agent'],'claude-code')
+        self.assertEqual(request.call_args.args[1]['context_kind'],'Code')
 
 if __name__ == '__main__': unittest.main()
