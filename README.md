@@ -171,6 +171,24 @@ relate-tap --name neo4j-fraud -- node server.js
 
 See [setup, source selection, Aura replication and capture semantics](docs/relate-tap.md).
 
+### Console counters
+
+| Metric | Meaning |
+| --- | --- |
+| Observed hosts | Hosts represented in the selected topology view. |
+| MCP sources | Distinct MCP sources by host and agent in the selected view. |
+| Tool requests saved | Persisted wrapped MCP tool requests, including failed calls. |
+| User intents saved | Distinct promoted question intents stored in Aura. |
+| Cypher queries saved | Persisted Cypher submissions; repeated executions count separately. |
+| Cowork recall hits | Code recall requests returning evidence from another agent in the same canonical repository, counted once per receipt. |
+| Aura snapshot replication | Replication status; `synced` reports the last confirmed push. |
+
+Saved totals persist across restarts and respect the agent/project filters;
+Cowork hits filter by the requesting agent. `—` means a total is unavailable or
+still loading. Cowork tracking starts when enabled: legacy receipts and historical
+estimates are not included automatically. New recalls of migrated older context
+can qualify. A hit proves retrieval, not that the evidence was used.
+
 On this Mac, `/usr/local/bin/relate-tap` is a symlink to the user-owned
 `~/.local/share/uv/tools/relate-tap/bin/relate-tap` installation, alongside
 `/usr/local/bin/neo4j-mcp`. This is a `uv` installation, not a Homebrew package.
@@ -329,6 +347,14 @@ records standalone lifecycle changes. Recall derives status from append-only
 events and ranks active memories ahead of resolved or superseded history. See
 [freshness and supersession](docs/freshness-and-supersession.md) for the schema,
 scope checks and replication behavior.
+
+The console's **Cowork recall hits** counter, beside **Cypher queries saved**,
+counts Code recall requests that return repository evidence recorded by another
+agent. Each receipt counts once, including usable pending local evidence; empty
+results, same-agent evidence and session inventories do not count. Totals persist
+in the console's capture graph across restarts and respect the requesting-agent
+and project filters. Tracking starts when this metric is enabled; previous
+unrecorded recall activity is not backfilled. A hit measures retrieval, not reuse.
 
 ## Aura embedding smoke test
 

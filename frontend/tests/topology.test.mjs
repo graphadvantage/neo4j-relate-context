@@ -215,6 +215,22 @@ test('Code startup recall and session expansion animate enterprise return paths'
  }
 });
 
+test('cowork hit totals are durable snapshots filtered by receiving agent and project',async()=>{
+ const {savedCoworkRecallHits}=await import('../src/topology-model.ts');
+ const fixture={...snapshot,recalls:[],cowork_stats:{state:'ready',groups:[
+  {agent:'codex',project:'git:github.com/team/one',hits:4},
+  {agent:'claude-code',project:'git:github.com/team/one',hits:2},
+  {agent:'codex',project:'git:github.com/team/two',hits:1},
+ ]}};
+ assert.equal(savedCoworkRecallHits(fixture,'',''),7);
+ assert.equal(savedCoworkRecallHits(fixture,'codex',''),5);
+ assert.equal(savedCoworkRecallHits(fixture,'','git:github.com/team/one'),6);
+ assert.equal(savedCoworkRecallHits(fixture,'codex','git:github.com/team/two'),1);
+ assert.equal(savedCoworkRecallHits({...fixture,cowork_stats:{state:'ready',groups:[]}},'',''),0);
+ assert.equal(savedCoworkRecallHits({...fixture,cowork_stats:undefined},'',''),null);
+ assert.equal(savedCoworkRecallHits({...fixture,cowork_stats:{state:'unavailable',groups:[]}},'',''),null);
+});
+
 test('saved counters survive reconnects and are not limited to the visible event window',async()=>{
  const {savedCaptureCounts}=await import('../src/topology-model.ts');
  const previous={...old,id:'query-1',call_id:'call-1',cypher:'RETURN 1',agent:'claude-desktop'};
