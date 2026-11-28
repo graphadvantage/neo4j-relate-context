@@ -356,25 +356,6 @@ in the console's capture graph across restarts and respect the requesting-agent
 and project filters. Tracking starts when this metric is enabled; previous
 unrecorded recall activity is not backfilled. A hit measures retrieval, not reuse.
 
-## Aura embedding smoke test
-
-Set `OPENAI_API_KEY` alongside the `AURA_*` connection values in the ignored
-`.env` file, then run:
-
-```sh
-docker compose run --rm --no-deps -T --entrypoint python3 console - < tests/smoke_aura_embeddings.py
-```
-
-This manual test calls `ai.text.embedBatch()` with two synthetic questions
-using `text-embedding-3-large` and 3,072 dimensions. It creates or updates two
-`ContextEmbeddingTest` nodes with IDs `ai-text-embed-batch-3072:0` and
-`ai-text-embed-batch-3072:1`. Their `embedding` properties are native
-`VECTOR<FLOAT32>(3072)` values, assigned directly from the Cypher 25
-procedure result.
-It verifies the committed property types and dimensions and prints metadata only.
-The test makes a paid OpenAI request and is excluded from automatic unit tests.
-It does not process existing chat messages or create retrieval indexes.
-
 ## Chat and Code classification
 
 Captured projects and sessions carry secondary `Chat` or `Code` labels:
