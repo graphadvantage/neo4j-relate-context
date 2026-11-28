@@ -25,6 +25,29 @@ proposal is retained below as design history. Implementation choices:
   `requires_live_git_verification`. There is no automatic ancestry check or
   assertion that a historical claim is current.
 
+## Live Aura verification
+
+The implementation has also passed `tests/smoke_aura_lifecycle.py` against live
+Aura using the production `AuraSync.push` path with existing-node and
+existing-relationship updates skipped. The test verifies:
+
+- An original memory is committed before later updates are pushed.
+- An additive canonical-project binding reaches an already-replicated session.
+- `SUPERSEDES`, `HAS_STATUS_EVENT` and `RECORDED_IN` links reach existing nodes,
+  and shared recall derives `superseded` from committed Aura evidence.
+- A subsequent reopening event reaches the same existing memory and recall
+  derives `reopened`, while both events and original evidence remain.
+
+The manual test uses UUID-scoped synthetic projects and exact generated node
+IDs, verifies their cleanup, and makes no embedding requests or project-history
+changes. Run it only with the branch's sources installed, its Relate CLI and
+configured `AURA_*` values. For a freshly built branch image:
+
+```sh
+docker compose build console
+docker compose run --rm --no-deps -T --entrypoint python3 console - < tests/smoke_aura_lifecycle.py
+```
+
 ## Original proposal
 
 ## Problem

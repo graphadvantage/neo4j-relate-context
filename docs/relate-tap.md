@@ -556,6 +556,10 @@ up to 200 complete turns and runs independently of chatbot intent promotion and
 the OpenAI key. Progress is persisted in the derived properties, so restarting
 continues from missing turns. Indexing runs at startup and on a roughly 30-second
 maintenance cycle; newly replicated records may await that cycle.
+When an index is already ready, a newly replicated turn may be absent until
+the next maintenance pass; index readiness alone does not trigger a substring
+scan for each new turn. Available pending local evidence is still returned
+separately. Substring fallback applies while building or after index failure.
 
 Ranked recall uses `db.index.fulltext.queryNodes`, retained for Neo4j 5/Cypher 25
 compatibility; see the [Neo4j full-text index documentation](https://neo4j.com/docs/cypher-manual/current/indexes/search-indexes/full-text-indexes/).
