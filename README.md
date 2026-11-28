@@ -330,6 +330,14 @@ events and ranks active memories ahead of resolved or superseded history. See
 [freshness and supersession](docs/freshness-and-supersession.md) for the schema,
 scope checks and replication behavior.
 
+The console's **Cowork recall hits** counter, beside **Cypher queries saved**,
+counts Code recall requests that return repository evidence recorded by another
+agent. Each receipt counts once, including usable pending local evidence; empty
+results, same-agent evidence and session inventories do not count. Totals persist
+in the console's capture graph across restarts and respect the requesting-agent
+and project filters. Tracking starts when this metric is enabled; previous
+unrecorded recall activity is not backfilled. A hit measures retrieval, not reuse.
+
 ## Aura embedding smoke test
 
 Set `OPENAI_API_KEY` alongside the `AURA_*` connection values in the ignored

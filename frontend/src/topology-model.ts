@@ -6,7 +6,7 @@ export type RecallActivity = {id: string; agent: string; host: string; project?:
 export type IntentStatistics = {state: string; groups: {project?: string; agents: string[]; intents: number}[]};
 export type Route = { connection: string; server: string; agent: string; host: string; username: string; project?: string; database: string; last_seen: string; active: boolean; identity_source: string; persisted_offset: number; database_state: string; replication: PushState; client_info?: {name: string}; commits?: Commit[] };
 export type Diagnostic = {id: string; source?: string; file?: string; offset?: number; error: string; first_seen: string; active: boolean; resolved_at?: string | null};
-export type Snapshot = { revision?: number; events: CaptureEvent[]; recalls?: RecallActivity[]; intent_stats?: IntentStatistics; stats?: {groups: {agent?: string; project?: string; requests: number; cyphers: number}[]} | null; error_history?: Diagnostic[]; errors: {file: string; error: string; offset: number}[]; window: number; replication: {state: string}; routes?: Route[]; enterprise?: {name: string; kind: string} | null };
+export type Snapshot = { revision?: number; events: CaptureEvent[]; recalls?: RecallActivity[]; intent_stats?: IntentStatistics; cowork_stats?: {state: string; groups: {agent: string; project: string; hits: number}[]}; stats?: {groups: {agent?: string; project?: string; requests: number; cyphers: number}[]} | null; error_history?: Diagnostic[]; errors: {file: string; error: string; offset: number}[]; window: number; replication: {state: string}; routes?: Route[]; enterprise?: {name: string; kind: string} | null };
 export type Box = { id: string; title: string; subtitle: string; kind: string; x?: number; y?: number };
 export type Edge = { id: string; sources: string[]; targets: string[]; active?: boolean; activityId?: string; disabled?: boolean; actor?: string; kind?: 'recall'; detail?: string };
 
@@ -46,6 +46,13 @@ export function savedUserIntentCount(snapshot: Snapshot, agent: string, project:
   return snapshot.intent_stats.groups.filter(group=>(!project || (group.project || 'Unspecified')===project)
     && (!agent || group.agents.includes(agent) || (agent==='Unspecified' && !group.agents.length)))
     .reduce((total,group)=>total+group.intents,0);
+}
+
+export function savedCoworkRecallHits(snapshot: Snapshot, agent: string, project: string) {
+  if(snapshot.cowork_stats?.state!=='ready') return null;
+  return snapshot.cowork_stats.groups
+    .filter(group=>(!agent || group.agent===agent) && (!project || group.project===project))
+    .reduce((total,group)=>total+group.hits,0);
 }
 
 export function topologyGraph(records: CaptureEvent[], enterprise: Snapshot['enterprise'], replication: string, now=Date.now(), received?: ActivityTimes, recalls: RecallActivity[]=[]) {

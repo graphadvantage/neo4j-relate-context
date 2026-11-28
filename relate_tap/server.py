@@ -24,6 +24,7 @@ from .registry import registry
 from .collector import ContainerRoutes
 from .diagnostics import Diagnostics
 from .intent_recall import IntentRecall
+from .cowork_metrics import CoworkMetrics
 from memory_graph import RELATE, direct_query
 
 
@@ -38,6 +39,7 @@ def create_app(data=None, spool=None, config=None, frontend=None):
     sources.database_locks = container_routes.locks
     sync = None
     recall = IntentRecall(sources)
+    cowork_metrics = CoworkMetrics(store.database,store.graph_lock)
     diagnostics = Diagnostics(data)
     stop = asyncio.Event()
     recall_activity = deque(maxlen=100)
@@ -163,6 +165,10 @@ def create_app(data=None, spool=None, config=None, frontend=None):
         try:
             result=await asyncio.to_thread(recall.request,operation,body)
             state=result.get('state','ready')
+            try:
+                await asyncio.to_thread(cowork_metrics.record,operation,body,result,client)
+            except Exception as exc:
+                diagnostics.report('Cowork recall hits','Could not persist hit ('+type(exc).__name__+').')
             return result
         except ValueError as exc:
             raise HTTPException(400,str(exc)) from None
@@ -226,8 +232,13 @@ def create_app(data=None, spool=None, config=None, frontend=None):
         except Exception as exc:
             diagnostics.report('Capture totals','Stored totals unavailable ('+type(exc).__name__+').')
             stats=None
+        try:
+            cowork_stats=cowork_metrics.statistics()
+        except Exception as exc:
+            diagnostics.report('Cowork recall hits','Stored totals unavailable ('+type(exc).__name__+').')
+            cowork_stats={'state':'unavailable','groups':[]}
         return {**snapshot, 'errors': errors, 'error_history': diagnostics.snapshot(), **inventory, 'enterprise': enterprise,
-                'recalls':recall_receipts(),'stats':stats,'intent_stats':recall.intent_stats,
+                'recalls':recall_receipts(),'stats':stats,'intent_stats':recall.intent_stats,'cowork_stats':cowork_stats,
                 "replication": dict(sync.status) if sync else {"state": state}}
 
     @app.get("/api/events")
@@ -238,7 +249,7 @@ def create_app(data=None, spool=None, config=None, frontend=None):
                 snapshot = topology()
                 # Full bounded snapshots make reconnects safe without per-browser cursors.
                 current = json.dumps([snapshot["revision"], snapshot["errors"], snapshot["replication"],
-                                      snapshot['routes'], snapshot['agents'], snapshot['enterprise'], snapshot['error_history'], snapshot['recalls'],snapshot['stats'],snapshot['intent_stats']])
+                                      snapshot['routes'], snapshot['agents'], snapshot['enterprise'], snapshot['error_history'], snapshot['recalls'],snapshot['stats'],snapshot['intent_stats'],snapshot['cowork_stats']])
                 if current != previous:
                     yield "data: " + json.dumps(snapshot) + "\n\n"
                     previous = current
