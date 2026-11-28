@@ -1,7 +1,7 @@
 import { pushActivityKey, VISIBLE_ACTIVITY_MS, type ActivityTimes } from './activity-observer.ts';
 type PushState = {state: string; push_id?: string; started_at?: string; last_pushed_at?: string};
 type Commit = {id: string; call_id?: string; kind: string; at: string};
-export type CaptureEvent = { id: string; kind: string; timestamp: string; connection: string; host: string; server: string; username: string; agent?: string; project?: string; tool?: string; arguments?: Record<string,unknown>; call_id?: string; cypher?: string; parameters?: unknown; status?: string; duration_ms?: number; row_count?: number; redacted?: boolean; response?: unknown; database?: string; identity_source?: string; persisted_offset?: number; database_state?: string; replication?: PushState; client_info?: {name: string}; commits?: Commit[] };
+export type CaptureEvent = { id: string; kind: string; timestamp: string; connection: string; host: string; server: string; username: string; agent?: string; project?: string; context_kind?: 'Chat' | 'Code'; tool?: string; arguments?: Record<string,unknown>; call_id?: string; cypher?: string; parameters?: unknown; status?: string; duration_ms?: number; row_count?: number; redacted?: boolean; response?: unknown; database?: string; identity_source?: string; persisted_offset?: number; database_state?: string; replication?: PushState; client_info?: {name: string}; commits?: Commit[] };
 export type RecallActivity = {id: string; agent: string; host: string; project?: string; tool: string; started_at: string; finished_at?: string; state: string};
 export type IntentStatistics = {state: string; groups: {project?: string; agents: string[]; intents: number}[]};
 export type Route = { connection: string; server: string; agent: string; host: string; username: string; project?: string; database: string; last_seen: string; active: boolean; identity_source: string; persisted_offset: number; database_state: string; replication: PushState; client_info?: {name: string}; commits?: Commit[] };
@@ -12,6 +12,9 @@ export type Edge = { id: string; sources: string[]; targets: string[]; active?: 
 
 export function isAuraRecall(event: CaptureEvent) {
   const tool=event.tool?.split(/__|\//).at(-1)?.split('.').at(-1);
+  const code=event.arguments?.context_kind==='Code' ||
+    (event.arguments?.context_kind!=='Chat' && event.context_kind==='Code' && !event.arguments?.mcp_source_id);
+  if(code && (tool==='recall_context' || tool==='get_session' || tool==='get_evidence')) return event.kind==='request';
   return event.kind==='request' && (tool==='get_query' || tool==='get_evidence' ||
     (tool==='recall_context' && typeof event.arguments?.query==='string' && !!event.arguments.query.trim()));
 }
@@ -111,9 +114,18 @@ export function topologyGraph(records: CaptureEvent[], enterprise: Snapshot['ent
     const desktop = event.agent === 'claude-desktop';
     const projectName = event.project || (desktop ? event.server : undefined);
     if (projectName) {
-      const subtitle = desktop ? 'Project · Project Name' : 'Project · GitHub Repo';
+      let title=projectName;
+      let subtitle = desktop ? 'Project · Project Name' : 'Project · Git repository';
+      if(!desktop && projectName.startsWith('git:')) {
+        const identity=projectName.slice(4), slash=identity.lastIndexOf('/');
+        title=identity.slice(slash+1);
+        subtitle='Git · '+identity.slice(0,slash);
+      } else if(!desktop && projectName.startsWith('git-local:')) {
+        title='Local repository';
+        subtitle='Git identity · '+projectName.slice(10,22);
+      }
       const projectKey = desktop ? [agentId, projectName] : ['repository', projectName];
-      const project = node('project:' + JSON.stringify(projectKey), projectName, subtitle, 'project');
+      const project = node('project:' + JSON.stringify(projectKey), title, subtitle, 'project');
       edge(agent, project, active, callId, false, agent);
       edge(project, server, active, callId, false, agent);
     } else {

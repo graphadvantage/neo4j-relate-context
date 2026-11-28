@@ -87,10 +87,13 @@ startup_timeout_sec = 30
 
 The outer tap discovers the MCP client identity. The inner `--agent codex`
 selects the memory server's `~/.relate-tap/databases/codex.rl`; it does not
-set a global agent identity. The project defaults to the repository name from
-Git's `origin` URL, falling back to the Git common directory and then the
-working directory. Renamed checkouts and worktrees with the same origin share
-the project name. MCP memory tools can omit `project` to use this default.
+set a global agent identity. The project defaults to a canonical Git origin key,
+such as `git:github.com/graphadvantage/neo4j-relate-context`. Host and full path
+are retained; URL credentials, query strings and fragments are not. SSH and HTTPS
+transport variants share a key. Without a usable origin, a `git-local:` hash of
+the host name and resolved Git common directory keeps worktrees together without publishing
+private paths. Outside Git the working-directory name remains an unclassified
+fallback. MCP tools can omit `project` to use this default.
 
 The first connection installs `~/.codex/skills/relate-tap-memory/SKILL.md` if
 missing. When ongoing capture is enabled in applicable Codex instructions, the
@@ -480,7 +483,7 @@ Projects and sessions retain their existing base labels and receive secondary
 sessions. Labels do not change existing IDs, uniqueness keys, or project names.
 
 The tap and memory writer discover `Code` when the project matches the Git-origin
-repository name of their working directory. Desktop defaults to `Chat` even if
+repository identity of their working directory. Desktop defaults to `Chat` even if
 its process starts in a checkout. The tap accepts `--context-kind Chat|Code` and
 `record_turn` accepts `context_kind` for explicit attribution, including work in
 an external directory. Unknown attribution is left unclassified. Merely using
@@ -493,8 +496,8 @@ records and skips unclassified sessions in mixed projects. It does not rename
 or split legacy projects that already share the same name.
 
 These labels establish the recall classification boundary. Shared coding recall
-reads Code projects/sessions by repository across agents; it uses lexical relevance
-and recency. Automatic handoff generation and semantic coding embeddings remain
+reads Code projects/sessions by repository across agents; it uses indexed full-text
+relevance and recency with an explicit lexical fallback. Automatic handoff generation and semantic coding embeddings remain
 separate work.
 
 
@@ -507,7 +510,7 @@ claude mcp add --scope user relate-memory-mcp -- /usr/local/bin/relate-tap --nam
 ```
 
 Start Claude Code from each repository. Both tap and memory server discover its
-Git-origin repository name from the working directory. No per-repository MCP
+canonical Git-origin key from the working directory. No per-repository MCP
 entry or fixed `--project` is needed. All Claude Code projects use the same
 `claude-code.rl`, with separate `ContextProject` attribution. A more specific
 project/local entry with the same server name can override the user entry;
@@ -523,7 +526,7 @@ instructions; configuring MCP alone records only calls actually made through it.
 `recall_context(context_kind="Code", query="design decisions")` searches existing
 Aura coding turns and returns author/session/turn IDs, prompt/response excerpts,
 reasoning summaries when recorded, recent sessions and structured memories.
-Code agents default to this mode even without a query. The Git project is the
+Repository-attributed requests default to this mode even without a query. The Git project is the
 scope; no domain MCP identifier is required. `source_agent` optionally narrows
 authorship, while the default includes all agents. Code reads require Aura
 credentials but do not require an OpenAI key or make embedding requests.
@@ -531,6 +534,79 @@ credentials but do not require an OpenAI key or make embedding requests.
 `get_session(context_kind="Code", session=<session id>)` reads a shared session;
 `before_position` pages backward. `get_evidence(context_kind="Code", turn_id=...)`
 expands an individual turn. Both enforce repository and Code-session scope.
-Responses use lexical relevance/recency, carry unverified evidence provenance,
+Responses report their full-text or fallback retrieval mode, carry unverified evidence provenance,
 and explicitly distinguish failed retrieval, no topic match, existing sessions
 and pending local records. No historical decision or commit is invented.
+
+Recall routing uses explicit `context_kind` first, then matching Git provenance,
+then an unambiguous locally stored Code-only project label. It does not maintain
+a coding-agent allowlist. Desktop defaults to Chat; mixed or unknown projects
+require explicit `context_kind: "Code"` for shared coding recall. Supplying a
+domain `mcp_source_id` keeps the Chat retrieval path unless Code is explicitly
+selected (which rejects that incompatible scope). Transport client discovery and
+skill installation still have their own supported-client mappings; an unfamiliar
+MCP client can use `--agent` for capture routing.
+
+#### Coding full-text indexing
+
+The console builds `context_code_turns_text` on `ContextTurn.search_text`, derived
+from the original prompt, final response and recorded reasoning summary. Old
+turns require no embeddings or generated summaries. Each background pass indexes
+up to 200 complete turns and runs independently of chatbot intent promotion and
+the OpenAI key. Progress is persisted in the derived properties, so restarting
+continues from missing turns. Indexing runs at startup and on a roughly 30-second
+maintenance cycle; newly replicated records may await that cycle.
+When an index is already ready, a newly replicated turn may be absent until
+the next maintenance pass; index readiness alone does not trigger a substring
+scan for each new turn. Available pending local evidence is still returned
+separately. Substring fallback applies while building or after index failure.
+
+Ranked recall uses `db.index.fulltext.queryNodes`, retained for Neo4j 5/Cypher 25
+compatibility; see the [Neo4j full-text index documentation](https://neo4j.com/docs/cypher-manual/current/indexes/search-indexes/full-text-indexes/).
+Query terms are quoted, and canonical repository plus optional author membership
+are filtered before the result limit, so other projects cannot crowd out the
+requested scope. Scores order relevance first and timestamp/turn ID break ties.
+Query-free recall still returns recent recorded history.
+
+`retrieval_mode` is `fulltext_recency` when the index is ready, otherwise
+`lexical_recency`. `search_index` reports `ready`, `building` or `unavailable`.
+Missing privileges or index failures produce a disclosed, scoped fallback;
+unavailability is degraded rather than a false empty result. Local pending
+records always use read-only substring retrieval, never index writes. This
+index is a derived Aura projection, separate from source-evidence replication.
+
+### Repository identity and legacy history
+
+New automatic scopes include the Git host and full owner/repository path:
+`git:github.com/team/backend` and `git:github.com/other/backend` are distinct.
+GitHub paths are normalized to lowercase; other hosts preserve path case.
+Non-default ports remain part of the host identity. SSH aliases, repository
+renames and separate origin-free clones are not automatically equated; use a
+shared explicit canonical `--project` value when equivalence is verified.
+Project keys support up to 512 characters. Use the key advertised by the memory
+MCP instead of supplying the former short repository name.
+
+Existing projects, sessions and evidence IDs are unchanged. Canonical recall
+never falls back to a same-named legacy project. Explicit requests using the old
+project key can still inspect legacy history. Restart MCP clients after upgrading
+to load the new default, and start a new session when switching project keys.
+
+To make verified history available in a canonical scope, inspect the evidence
+and select individual `ContextSession.id` values. This prints a dry-run plan;
+add `--apply` to create the links in a local database:
+
+```sh
+python -m relate_tap.project_identity \
+  --database "$HOME/.relate-tap/databases/codex.rl" \
+  --legacy-project neo4j-relate-context \
+  --origin https://github.com/graphadvantage/neo4j-relate-context.git \
+  --session-id VERIFIED_CONTEXT_SESSION_ID
+```
+
+Repeat `--session-id` for each verified session. Every selection must belong to
+the legacy project and carry `Code` without `Chat`; otherwise nothing is linked.
+Binding is additive and idempotent: original membership, messages, turns,
+memories and IDs remain. New `HAS_SESSION` links replicate through the normal
+snapshot push without updates to existing Aura nodes. Capture events, standalone
+notes and chatbot intents are not reattributed. Already mixed sessions cannot
+be safely split. No live database is migrated automatically.

@@ -16,8 +16,9 @@ directly, supply a different user identity, or configure another destination.
 Choose one stable `project` key per conversation:
 
 - Honor an explicit shared memory key in the project's instructions.
-- For coding, use the known repository name, matching the key used by other
-  agents. Do not run Git ingestion or infer a repository from unrelated examples.
+- For coding, use the canonical Git project key advertised by the memory server,
+  matching other agents; never reduce it to the repository basename. Do not run
+  Git ingestion or infer a repository from unrelated examples.
 - Otherwise use the current Claude project name exactly as provided in context.
 - Outside a named project, use `general`. Extract POLE-O entities to connect
   subjects across chats rather than creating a new collection for each entity.

@@ -5,6 +5,9 @@ import re
 
 MODEL = 'text-embedding-3-small'
 DIMENSIONS = 1536
+# Bump when candidate() validation changes meaning, so previously rejected rows
+# are reconsidered instead of staying permanently excluded from promotion.
+VALIDATOR_VERSION = 1
 
 
 def query_integrity(cypher):
@@ -19,7 +22,7 @@ def query_integrity(cypher):
 
 
 def scope(project, mcp_source_id):
-    if not isinstance(project, str) or not project.strip() or len(project) > 160:
+    if not isinstance(project, str) or not project.strip() or len(project) > 512:
         raise ValueError('A non-empty project is required')
     if not isinstance(mcp_source_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,159}', mcp_source_id):
         raise ValueError('mcp_source_id must be the stable MCP server name, not a transport connection UUID')
@@ -43,28 +46,44 @@ def source_from_tool(name, explicit=None):
     return None
 
 
-def candidate(row):
-    """Only correlate queries explicitly recorded in the same turn as the prompt."""
+def _evaluate(row):
+    """Classify a candidate row, correlating queries explicitly recorded in the
+    same turn as the prompt. Return (value, None) when promotable, or
+    (None, reason) with a stable, data-level cause so the promotion scan can skip
+    the row durably instead of re-selecting it on every pass."""
     try:
         source = source_from_tool(row.get('tool'), row.get('mcp_source_id'))
     except ValueError:
-        return None
+        return None, 'bad_source'
     question = row.get('question')
-    if not source or not isinstance(question, str) or len(question.strip()) < 12:
-        return None
+    if not source:
+        return None, 'no_source'
+    if not isinstance(question, str) or len(question.strip()) < 12:
+        return None, 'short_question'
     if not row.get('query_id') or not row.get('cypher') or not row.get('prompt_id'):
-        return None
-    if query_integrity(row['cypher']) != 'not_validated':
-        return None
+        return None, 'missing_fields'
+    integrity = query_integrity(row['cypher'])
+    if integrity != 'not_validated':
+        return None, integrity
     try:
         scoped = scope(row.get('project'), source)
     except ValueError:
-        return None
+        return None, 'bad_scope'
     normalized = ' '.join(question.split())
     fingerprint = hashlib.sha256(json.dumps([scoped['scope_key'], normalized]).encode()).hexdigest()
     return {**row, **scoped, 'id': fingerprint, 'question': question.strip(),
             'search_text': normalized.encode('utf-8')[:6000].decode('utf-8','ignore'), 'embedding_model': MODEL,
-            'association': 'same_recorded_turn', 'validation': 'client_reported_unverified'}
+            'association': 'same_recorded_turn', 'validation': 'client_reported_unverified'}, None
+
+
+def candidate(row):
+    """Promotable intent for a recorded turn, or None when the row cannot qualify."""
+    return _evaluate(row)[0]
+
+
+def rejection_reason(row):
+    """Stable reason a row cannot become an intent, or None when it qualifies."""
+    return _evaluate(row)[1]
 
 
 def lucene_query(question, scope_key):

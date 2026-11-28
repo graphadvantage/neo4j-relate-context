@@ -71,8 +71,8 @@ class CodingRecallTest(unittest.TestCase):
         self.assertNotIn('private',str(r))
         with self.assertRaises(ValueError):broken.request('recall',{'project':'repo','mcp_source_id':'relate-memory-mcp'})
 
-    def test_mcp_defaults_code_agents_to_shared_repository_recall(self):
-        with patch('relate_tap.recall_client.request',return_value={'state':'ready'}) as forward:
+    def test_mcp_defaults_repository_work_to_shared_recall(self):
+        with patch('memory_mcp.context_kind',return_value='Code'), patch('relate_tap.recall_client.request',return_value={'state':'ready'}) as forward:
             call(None,None,'recall_context',{},'claude-code','repo')
             self.assertEqual(forward.call_args.args[1]['context_kind'],'Code')
             call(None,None,'get_session',{'session':'shared'},'claude-code','repo')

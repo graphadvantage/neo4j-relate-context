@@ -11,7 +11,7 @@ import sys
 from aura_sync import AuraSync, DEFAULT_CREDENTIALS
 from database_lock import DatabaseLock
 from memory_graph import ENTITIES, EXCHANGE, LOAD, RECALL, SESSION, clean, direct_query, exchange, save_note
-from relate_tap.bootstrap import database_for, canonical_agent, discover_project, settings
+from relate_tap.bootstrap import database_for, canonical_agent, discover_project, settings, context_kind
 
 DEFAULT_DATABASE = database_for('claude-desktop')
 
@@ -46,6 +46,13 @@ TOOLS = [
     tool("record_turn", "Save a completed exchange in order, including observed tool calls and POLE+O entities.",
          ["project", "session", "turn", "prompt", "response"], {
              "context_kind": {"enum": ["Chat", "Code"], "description": "Project/session work type: Code for repository work, Chat for chatbot/MCP projects. Auto-discovered when omitted."},
+             "git_commit": {"type":"string","description":"Observed full Git SHA; omit when unknown."},
+             "git_branch": {"type":"string","description":"Observed branch, or HEAD when detached."},
+             "git_dirty": {"type":"boolean","description":"Observed working-tree modification state."},
+             "memory_events": {"type":"array","maxItems":100,"items":{"type":"object",
+                 "required":["memory_id","kind","reason"],"properties":{
+                     "memory_id":{"type":"string"},"kind":{"enum":["resolved","superseded","reopened"]},
+                     "reason":{"type":"string"},"replacement_id":{"type":"string"}}}},
              "reasoning_summary": {"type": "string", "maxLength": 4000, "description": "Concise explanation grounded in the answer and observed evidence; never hidden chain-of-thought."},
              "model": {"type": "string", "description": "Observed model name; omit when unavailable."},
              "model_version": {"type": "string", "description": "Exact reported model version; never infer from the model name."},
@@ -64,7 +71,9 @@ TOOLS = [
                  "evidence": {"enum": ["prompt", "response"]}}}},
              "memories": {"type": "array", "items": {"type": "object", "required": ["kind", "subject", "body"],
                  "properties": {"kind": {"enum": ["fact", "decision", "open_item"]}, "subject": {"type": "string"},
-                                "body": {"type": "string"}, "evidence": {"enum": ["prompt", "response"]}}}},
+                                "body": {"type": "string"}, "evidence": {"enum": ["prompt", "response"]},
+                                "resolves":{"type":"string","description":"Existing memory ID explicitly resolved by this new memory."},
+                                "supersedes":{"type":"string","description":"Existing memory ID explicitly replaced by this new memory."}}}},
          }),
     tool("flush_memory", "Request a background Aura replication attempt.", []),
 ]
@@ -90,9 +99,15 @@ Git-origin project default. This retrieves recorded turns, decisions and session
 from Aura across agents. No mcp_source_id or saved Cypher is needed. Optionally
 set source_agent="codex" or "claude-code"; omit to recall both. get_session with
 context_kind="Code" expands a returned session_key; get_evidence with
-context_kind="Code" and turn_id expands a turn. Retrieval is lexical plus recency,
-not vector search. Empty retrieval does not prove no other session exists; inspect
+context_kind="Code" and turn_id expands a turn. Retrieval uses indexed full-text
+relevance and recency, with a disclosed lexical fallback, not vector search. Empty retrieval does not prove no other session exists; inspect
 returned sessions. Report degraded state and pending local origin honestly.
+New turns carry observed Git anchors and provenance; a dirty tree means the
+commit does not fully describe the captured work. Old turns remain unknown.
+Use memory_ids returned by record_turn or recall to explicitly resolve, reopen,
+or supersede a memory. Status changes preserve original evidence and require
+the target memory to belong to the same project. Never infer completion merely
+from a matching subject; record only evidence-backed lifecycle changes.
 For EVERY new substantive domain-data question, call recall_context with the CURRENT
 question as query, project and the actual domain
 mcp_source_id (e.g. robot-twin). Search is strictly scoped to that MCP source and project;
@@ -114,9 +129,16 @@ On an explicit wrap-up, call flush_memory after recording the final turn."""
 def call(run, sync, name, args, agent="claude-desktop", project=None):
     if name == "flush_memory":
         return sync.flush() if sync else {"queued": False, "state": "disabled"}
-    project = clean(args.get("project") or project, 160, "project")
-    coding = args.get('context_kind') == 'Code' or (
-        agent in ('codex','claude-code') and not args.get('mcp_source_id') and args.get('context_kind') != 'Chat')
+    project = clean(args.get("project") or project, 512, "project")
+    recall_tool = name in ('recall_context','get_session','get_evidence')
+    work_kind = context_kind(project, agent, args.get('context_kind')) if recall_tool else None
+    if work_kind is None and recall_tool and run:
+        # Stored provenance supports clients launched outside a checkout. Mixed
+        # Chat/Code collections require an explicit choice, rather than guessing.
+        labels = run('MATCH(p:ContextProject {name:$input.project}) RETURN labels(p) AS labels', {'project':project})
+        if len(labels)==1 and 'Code' in labels[0]['labels'] and 'Chat' not in labels[0]['labels']:
+            work_kind = 'Code'
+    coding = work_kind == 'Code' and (not args.get('mcp_source_id') or args.get('context_kind')=='Code')
     if coding and name in ('recall_context','get_session','get_evidence'):
         from relate_tap.recall_client import request
         operation={'get_session':'session','get_evidence':'evidence','recall_context':'recall'}[name]
@@ -129,8 +151,10 @@ def call(run, sync, name, args, agent="claude-desktop", project=None):
         payload = exchange(project, agent, args)
         rows = run(EXCHANGE, payload, read_only=False)
         if not rows or rows[0]["next_links"] == 0:
-            raise ValueError("Turn was not saved; check whether the turn ID was reused with different content")
-        return {"session": payload["session"], "turn": args["turn"], "events": len(payload["messages"])}
+            raise ValueError("Turn was not saved; check retry content and memory lifecycle IDs/scope")
+        return {"session": payload["session"], "turn": args["turn"], "events": len(payload["messages"]),
+                "memory_ids":[{k:m[k] for k in ('id','kind','subject')} for m in payload['memories']],
+                "git":{k:payload[k] for k in ('git_commit','git_branch','git_dirty','git_source')}}
     if name == "save_context":
         return {"notes": save_note(run, project, agent, args)}
     limit = args.get("limit", 10)

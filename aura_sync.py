@@ -18,7 +18,7 @@ from database_lock import FileLock
 
 KEYS = ("ContextProject:name", "ContextSession:id", "ContextMessage:id",
         "ContextMemory:id", "ContextNote:id", "ContextEntity:id", "ContextTurn:id",
-        "ContextTool:id", "ContextQuery:id", "ContextReasoning:id",
+        "ContextTool:id", "ContextQuery:id", "ContextReasoning:id", "ContextMemoryEvent:id",
         "CaptureHost:id", "CaptureConnection:id", "CaptureEvent:id", "CaptureCall:id")
 DEFAULT_CREDENTIALS = Path(__file__).resolve().parent / "connections/enterprise-relate-memory.txt"
 

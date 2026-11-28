@@ -18,7 +18,12 @@ its `graph.rl`. Live Git is authoritative. Standalone notes require a request.
 Call `flush_memory` on an explicit wrap-up; a queued push is not proof of Aura
 delivery. For shared repository recall, use `recall_context` with
 `context_kind: "Code"` and optional `query`; omit `mcp_source_id`. This reads
-existing Aura coding turns across agents using lexical relevance and recency.
+existing Aura coding turns across agents using full-text relevance and recency,
+with an explicitly reported lexical fallback. Use the advertised canonical Git
+key, including host and owner/path; never shorten it or silently include legacy
+short-name history. Recorded Git anchors remain historical evidence, and dirty
+working trees require verification against live files. Resolve or supersede
+memories only through explicit evidence-backed lifecycle events.
 Expand matches with `get_evidence(turn_id=..., context_kind="Code")` or
 `get_session(session=session_key, context_kind="Code")`. Report degraded access
 and pending local records honestly; verify recalled claims against live Git.

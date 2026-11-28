@@ -34,7 +34,7 @@ flowchart TB
     subgraph Shared["Console — shared recall and topology/playground UI"]
         Recall["Recall API"]
         Chat["Chat: project + domain MCP scope<br/>Vector / full-text intent and Cypher retrieval"]
-        Code["Code: repository scope across agents<br/>Lexical relevance + recency"]
+        Code["Code: repository scope across agents<br/>Full-text relevance + recency"]
         Recall --> Chat
         Recall --> Code
     end
@@ -218,17 +218,21 @@ cd ~/GitHub/your-repo
 claude
 ```
 
-The tap and memory server discover the project from the Git-origin repository
-name, so renamed checkouts and worktrees retain the same project attribution.
+The tap and memory server discover a canonical project key from the Git origin,
+such as `git:github.com/graphadvantage/neo4j-relate-context`. SSH and HTTPS origins
+for the same host and repository share a key; different owners or hosts remain
+separate. Renamed checkouts and worktrees retain the same project attribution.
 All Claude Code repositories write to `~/.relate-tap/databases/claude-code.rl`,
 organized under their respective `ContextProject` nodes. Git-attributed projects
 and sessions receive the secondary `Code` label. The native worker pushes this
 database to the configured enterprise Aura instance.
 
-Attribution currently uses the repository's short name, so distinct repositories
-that share a basename (for example two different `backend` repos under separate
-owners) resolve to the same `ContextProject` and shared recall scope. Keep
-repository names distinct until scoping is extended to full origin identity.
+Repositories without a usable origin use a `git-local:` hash of the host name
+and Git common directory. This keeps worktrees together without publishing local paths. Local
+keys are specific to that checkout and machine. Explicit `--project` overrides
+remain exact user-selected scopes. Existing short-name history is retained and
+never silently included in canonical recall; see
+[binding verified legacy sessions](docs/relate-tap.md#repository-identity-and-legacy-history).
 
 Automatic conversation capture also requires memory instructions. Add the
 following to `~/.claude/CLAUDE.md` to enable it across repositories:
@@ -273,7 +277,7 @@ Codex and Claude Code capture repository work into separate local databases,
 `codex.rl` and `claude-code.rl`, then replicate to the same enterprise Aura
 graph. Shared recall is scoped to the repository's `Code` projects and sessions,
 with optional filtering by authoring agent. It retrieves recorded turns,
-decisions and session evidence using lexical relevance and recency, without
+decisions and session evidence using full-text relevance and recency, without
 requiring a domain MCP identifier, saved Cypher or embeddings.
 
 <img src="assets/codex-and-claude-code-cowork-recall.png" alt="Codex and Claude Code sharing repository context through separate local databases and enterprise Aura, with recall paths back to both agents" width="800">
@@ -291,8 +295,10 @@ Coding recall is shared across agents through Aura. For example:
 ```
 
 Pass this to `recall_context`; omit `project` to accept the Git-origin default.
-Omit `source_agent` to recall all agents' work. Claude Code and Codex default to
-Code recall even without a query. No domain MCP name or saved Cypher is required.
+Omit `source_agent` to recall all agents' work. Matching Git provenance or a
+stored Code-only project defaults to Code recall even without a query, regardless
+of agent name. Use explicit `context_kind` for mixed or unknown projects. No
+domain MCP name or saved Cypher is required.
 Results include recent sessions, matching recorded turns and structured memories,
 with author/session/turn provenance. Use `get_evidence` with `turn_id` or
 `get_session` with the returned `session_key`/session `id`, both with
@@ -300,11 +306,29 @@ with author/session/turn provenance. Use `get_evidence` with `turn_id` or
 with `before_position`. Existing captured Code sessions work immediately; no
 re-embedding or summary migration is needed.
 
-Coding retrieval uses lexical relevance and recency, not semantic vectors.
+Coding retrieval uses an Aura full-text index and recency, without semantic
+vectors. The console incrementally indexes existing and new recorded turns;
+responses report `fulltext_recency` when the index is ready, or
+`lexical_recency` for a scoped substring fallback while it builds or is
+unavailable. Index failures are reported as degraded, and pending local evidence
+uses the read-only fallback. Index maintenance does not require an OpenAI key.
 Recalled statements still require checking against live Git. Empty topic matches
 do not mean no sessions exist; inspect `sessions`, response state and
 `pending_local`. Chatbot intent/Cypher recall retains its separate MCP-scoped
 vector/full-text path.
+
+New Code turns record full Git commit, branch, working-tree modification state
+and provenance when observed. Server observation is limited to the matching
+repository; historical unknowns remain unknown. Dirty-state and freshness
+annotations describe the evidence, without asserting it is current.
+
+Memories retain their original evidence when resolved, reopened or superseded.
+`record_turn` returns `memory_ids`; a new memory can explicitly resolve or
+replace an existing one using `resolves` or `supersedes`, while `memory_events`
+records standalone lifecycle changes. Recall derives status from append-only
+events and ranks active memories ahead of resolved or superseded history. See
+[freshness and supersession](docs/freshness-and-supersession.md) for the schema,
+scope checks and replication behavior.
 
 ## Aura embedding smoke test
 

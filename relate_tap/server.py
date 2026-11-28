@@ -71,6 +71,8 @@ def create_app(data=None, spool=None, config=None, frontend=None):
 
     async def promote_intents():
         while not stop.is_set():
+            if all(os.environ.get('AURA_'+key) for key in ('URI','USERNAME','PASSWORD')):
+                await asyncio.to_thread(recall.coding_search.prepare)
             try:
                 if recall.enabled():
                     await asyncio.to_thread(recall.promote)

@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import re
-from urllib.parse import urlsplit, unquote
 import subprocess
 import sys
 import tempfile
@@ -148,23 +147,7 @@ def context_kind(project, agent=None, explicit=None, directory=None):
 
 
 def discover_project(directory=None):
-    """Prefer origin repository name; use the Git common directory as fallback."""
+    """Canonical Git identity, or a directory name for non-repository contexts."""
+    from .project_identity import discover_repository
     directory = Path(directory or Path.cwd()).resolve()
-    try:
-        remote = subprocess.run(['git', '-C', str(directory), 'remote', 'get-url', 'origin'],
-                                capture_output=True, text=True, timeout=5)
-        if remote.returncode == 0 and remote.stdout.strip():
-            url = remote.stdout.strip().rstrip('/')
-            path = urlsplit(url).path if '://' in url else url.rsplit(':', 1)[-1]
-            name = unquote(path.rsplit('/', 1)[-1]).removesuffix('.git')
-            if name and name not in {'.', '..'}:
-                return name
-        result = subprocess.run(['git', '-C', str(directory), 'rev-parse',
-                                 '--path-format=absolute', '--git-common-dir'],
-                                capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            common = Path(result.stdout.strip())
-            return common.parent.name if common.name == '.git' else common.name.removesuffix('.git')
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return directory.name
+    return discover_repository(directory) or directory.name

@@ -5,7 +5,8 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from .intent_model import MODEL, DIMENSIONS, bounded, candidate, fuse, lucene_query, scope, query_integrity
+from .intent_model import (MODEL, DIMENSIONS, VALIDATOR_VERSION, bounded, candidate,
+                           rejection_reason, fuse, lucene_query, scope, query_integrity)
 
 CANDIDATES = '''
 MATCH (p:ContextProject)-[:HAS_SESSION]->(s:ContextSession {source:'claude-desktop'})
@@ -19,11 +20,24 @@ WHERE q.cypher IS NOT NULL AND size(trim(prompt.body))>=12
     MATCH (prompt)-[:EXPRESSES]->(i:ContextIntent)-[:RESOLVED_BY]->(q)
     WHERE i.embedding_model = $model
   }
+  AND NOT EXISTS {
+    MATCH (prompt)-[:REJECTED_AS]->(rej:ContextIntentRejection {query_id:q.id})
+    WHERE rej.validator_version = $validator
+  }
 RETURN DISTINCT p.name AS project,s.session_id AS session,t.id AS turn_id,
        prompt.id AS prompt_id,prompt.body AS question,prompt.timestamp AS timestamp,
        message.tool AS tool,message.mcp_source_id AS mcp_source_id,
        q.id AS query_id,q.cypher AS cypher
 ORDER BY timestamp,prompt_id,query_id LIMIT $limit
+'''
+REJECT = '''
+UNWIND $rows AS row
+MATCH (prompt:ContextMessage {id:row.prompt_id})
+MERGE (rej:ContextIntentRejection {prompt_id:row.prompt_id,query_id:row.query_id,validator_version:$validator})
+  ON CREATE SET rej.first_seen=datetime()
+SET rej.reason=row.reason,rej.last_seen=datetime(),rej.embedding_model=$model
+MERGE (prompt)-[:REJECTED_AS]->(rej)
+RETURN count(*) AS rejected
 '''
 EMBED = '''CYPHER 25
 CALL ai.text.embedBatch($texts, 'OpenAI', {token:$token, model:$model, dimensions:$dimensions})
@@ -106,6 +120,8 @@ class IntentRecall:
         self.ready = False
         self.status = {'state':'pending','model':MODEL,'dimensions':DIMENSIONS}
         self.intent_stats = {'state':'pending','groups':[]}
+        from .coding_search import CodingSearch
+        self.coding_search = CodingSearch(lambda query, **params: self.run(query, **params))
 
     def refresh_intent_statistics(self):
         if not self.enabled():
@@ -154,14 +170,26 @@ class IntentRecall:
         self.run('''CREATE FULLTEXT INDEX context_intents_text IF NOT EXISTS
             FOR (i:ContextIntent) ON EACH [i.search_text,i.scope_key]''')
         self.run('CREATE INDEX context_intent_scope IF NOT EXISTS FOR (i:ContextIntent) ON (i.mcp_source_id,i.project,i.embedding_model)')
+        self.run('CREATE INDEX context_rejection_scope IF NOT EXISTS FOR (r:ContextIntentRejection) ON (r.validator_version,r.query_id)')
         self.run('CALL db.awaitIndexes(60)')
         self.ready = True
 
     def promote(self, limit=20):
         with self.lock:
             self.initialize()
-            raw = self.run(CANDIDATES,model=MODEL,limit=limit)
-            rows = [value for row in raw if (value:=candidate(row))]
+            raw = self.run(CANDIDATES,model=MODEL,validator=VALIDATOR_VERSION,limit=limit)
+            rows,rejected = [],[]
+            for row in raw:
+                value = candidate(row)
+                if value:
+                    rows.append(value)
+                else:
+                    rejected.append({'prompt_id':row.get('prompt_id'),'query_id':row.get('query_id'),
+                                     'reason':rejection_reason(row)})
+            # Persist rejections so permanently-invalid rows stop refilling the
+            # oldest-first scan window and starving newer valid candidates.
+            if rejected:
+                self.run(REJECT,rows=rejected,validator=VALIDATOR_VERSION,model=MODEL)
             existing = {r['id'] for r in self.run('''MATCH(i:ContextIntent)
                 WHERE i.id IN $ids AND i.embedding_model=$model AND i.embedding IS NOT NULL
                 RETURN i.id AS id''',ids=[row['id'] for row in rows],model=MODEL)}
@@ -175,7 +203,7 @@ class IntentRecall:
             linked = self.run(LINK,rows=rows)[0]['linked'] if rows else 0
             self.status = {'state':'ready','model':MODEL,'dimensions':DIMENSIONS,
                 'last_run':datetime.now(timezone.utc).isoformat(),'embedded':len(missing),
-                'linked':linked,'skipped_unscoped':len(raw)-len(rows)}
+                'linked':linked,'rejected':len(rejected),'skipped_unscoped':len(raw)-len(rows)}
             return self.status
 
     def local_candidates(self, scoped, query_id=None):
@@ -222,7 +250,7 @@ class IntentRecall:
     def request(self, operation, body):
         if body.get('context_kind')=='Code':
             from .coding_recall import CodingRecall
-            return CodingRecall(self.run,self.sources).request(operation,body)
+            return CodingRecall(self.run,self.sources,self.coding_search).request(operation,body)
         scoped = scope(body.get('project'),body.get('mcp_source_id'))
         limit = body.get('limit',5)
         if type(limit) is not int or not 1<=limit<=20:
